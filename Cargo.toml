@@ -1,0 +1,21 @@
+[package]
+name = "session-board"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Observe agent sessions grouped by project"
+
+[[bin]]
+name = "sboard"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.29"
+notify = "8"
+ratatui = "0.30"
+rusqlite = { version = "0.38", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+toml = "0.9"

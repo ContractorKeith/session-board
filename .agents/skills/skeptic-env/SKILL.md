@@ -15,8 +15,8 @@ every v1 row in `docs/PLAN.md` §4 passing §10 on Omarchy, the Mac Studio and C
 ```bash
 cargo build --release && ./target/release/sboard version
 cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings      # exactly as CI
-cargo test                                     # fixtures only; no live agent, tmux or network
+cargo clippy --locked --all-targets -- -D warnings   # exactly as CI
+cargo test --locked                                  # fixtures only; no live agent, tmux or network
 cargo run -- doctor                            # which real stores this box has
 cargo run -- list --json | head
 ```
@@ -61,4 +61,5 @@ read-only inputs; sboard must never write inside `~/.claude`, `~/.codex`, `~/.gr
 
 ## Earlier rounds
 
-- none yet
+- Round 1 on PR #9 head 96d50d9 (Linux, Omarchy; macOS, Mac Studio): bugs #10–#15 fixed on the
+  branch; tracked weaknesses #16–#18. Report: worklog/reports/session-board-review-2026-11-01.md.
