@@ -28,9 +28,10 @@ pub(crate) fn at(path: &Path, error: impl std::fmt::Display) -> io::Error {
     io::Error::other(format!("{}: {error}", path.display()))
 }
 
-/// Reject FIFOs/devices/directories and symlinks before opening optional text paths.
+/// Reject FIFOs, devices and directories before opening optional text paths. Follows
+/// symlinks on purpose: dotfiles-managed config and state files are links (#13).
 pub(crate) fn regular_file(path: &Path) -> io::Result<()> {
-    if fs::symlink_metadata(path)?.file_type().is_file() {
+    if fs::metadata(path)?.file_type().is_file() {
         Ok(())
     } else {
         Err(io::Error::other("not a regular file"))

@@ -568,3 +568,34 @@ fn scan_sorts_sessions_newest_first_then_by_id() {
         .collect();
     assert_eq!(ids, ["c", "a", "b"]);
 }
+
+/// A symlinked config or state file (dotfiles-managed) loads through the link.
+#[cfg(unix)]
+#[test]
+fn symlinked_config_and_state_files_load() {
+    use std::os::unix::fs::symlink;
+    let temp = tempfile::tempdir().unwrap();
+    let real = temp.path().join("real");
+    let config_dir = temp.path().join("config");
+    let state_dir = temp.path().join("state");
+    fs::create_dir_all(&real).unwrap();
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::create_dir_all(&state_dir).unwrap();
+    fs::write(real.join("config.toml"), "roots = ['/from-link']\n").unwrap();
+    fs::write(real.join("state.toml"), "pins = ['/from-link']\n").unwrap();
+    symlink(real.join("config.toml"), config_dir.join("config.toml")).unwrap();
+    symlink(real.join("state.toml"), state_dir.join("state.toml")).unwrap();
+    let output = command(temp.path())
+        .args(["list", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let projects: Vec<Project> = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].root, Path::new("/from-link"));
+    assert!(projects[0].pinned);
+}
