@@ -16,13 +16,16 @@ printable line. Display detail text retains the original eligible prose.
 The first message cwd is the launch directory; later changes are ignored. Empty
 or relative cwds skip the session with a count. Shared normalization canonicalizes
 existing paths and resolves `..`/separators otherwise; project resolution maps
-cwds inside `.git` to the project. IDs are `claude_code:<native-id>`; resume hints
-retain native IDs, avoiding cross-agent read-mark collisions.
+cwds inside `.git` to the project. IDs are `claude_code:<native-id>`; native IDs use the same printable-line cleanup
+as titles, and an empty cleaned ID skips/counts the session. Resume hints use the
+cleaned native ID, avoiding terminal injection and cross-agent read-mark collisions.
 
 Read 256 KiB of head and 64 KiB of tail. Complete head lines supply metadata and
 first prompt; tail records supply current activity/status. A tail starting on a
-line boundary retains its first line. If no complete tail record is available,
-read from the end of the complete head through EOF, capped at 64 MiB. Beyond that,
+line boundary retains its first line. Otherwise scan backwards in 64 KiB steps to
+the preceding newline (or head end), including the crossing record even if complete
+ignored records follow it. Scan/read size is capped at 64 MiB. If no complete tail
+record is available, retain the bounded head-end-to-EOF fallback. Beyond the cap,
 skip and count the session with a reason. Sampled malformed/truncated/invalid-UTF-8
 records count as skipped lines; seam fragments do not. Empty/unreadable or invalid
 sessions increment skipped sessions. Missing/unreadable stores increment skipped
@@ -33,7 +36,8 @@ PLAN §6 first-match rules, thresholds in `src/status.rs`:
 
 - Tool_use blocks or tool_use stop reasons indicate pending generation. A last user
   prompt or tool_result also means generating. Under 1800 seconds is working;
-  at/after 1800 is error. `[Request interrupted by user` makes that user record idle.
+  at/after 1800 is error. A user record **starting with** `[Request interrupted by user`
+  is idle; quoting that marker later in a prompt does not interrupt it.
 - end_turn, max_tokens and stop_sequence are ended turns. Only this turn's text is
   tested for trailing `?` or `<question>` / `<request_user_input>` markers: waiting.
   Empty/thinking-only text never reuses an earlier question. Otherwise done below
@@ -67,3 +71,9 @@ Round 2 live sampling found mid-turn idle, sticky tool failures and stale questi
 reuse. These were bugs in transcript interpretation and are fixed. Long calls
 observed on both machines motivated the agreed threshold increase to 30 minutes.
 Question punctuation is still a heuristic; no pane/process inference is used.
+
+Round 3 regressions in `tests/round2.rs` cover a 100 KB fresh prompt crossing the
+nominal tail before an ignored attachment, printable/empty IDs, signed timestamp
+fields (skipped lines), file-based project filters and quoted interruption prose.
+Removing the backward scan fails the straddling-record test. Timestamp numeric
+fields must contain ASCII digits, including year/month/day and offset fields.

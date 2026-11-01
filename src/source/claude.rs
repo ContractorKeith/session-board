@@ -69,8 +69,13 @@ fn session(path: &Path, now: i64, result: &mut SourceScan) -> Option<Session> {
             result.skipped_lines += 1;
             continue;
         };
-        if id.is_empty() {
-            id = read::string(&v, "sessionId");
+        if id.is_empty()
+            && let Some(native) = v["sessionId"].as_str()
+        {
+            id = read::title(native);
+            if id.is_empty() {
+                return None;
+            }
         }
         if cwd.is_none() {
             cwd = v["cwd"].as_str().map(PathBuf::from);
@@ -106,7 +111,7 @@ fn session(path: &Path, now: i64, result: &mut SourceScan) -> Option<Session> {
                 first_user.get_or_insert_with(|| text.clone());
                 user = text.clone();
             }
-            tail.pending = !text.contains("[Request interrupted by user");
+            tail.pending = !text.starts_with("[Request interrupted by user");
             tail.ended = false;
             tail.text.clear();
         }

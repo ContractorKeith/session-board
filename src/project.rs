@@ -27,11 +27,16 @@ impl ProjectRoots {
             .entry(cwd.to_owned())
             .or_insert_with(|| {
                 let normalized = normalize(cwd, None).unwrap_or_else(|| cwd.to_owned());
-                let directory = normalized
+                let directory = if normalized.is_file() {
+                    normalized.parent().unwrap_or(&normalized)
+                } else {
+                    &normalized
+                };
+                let directory = directory
                     .ancestors()
                     .find(|p| p.file_name().is_some_and(|n| n == ".git"))
                     .and_then(Path::parent)
-                    .unwrap_or(&normalized);
+                    .unwrap_or(directory);
                 git_root(directory)
                     .and_then(|p| normalize(&p, None))
                     .unwrap_or_else(|| directory.to_owned())

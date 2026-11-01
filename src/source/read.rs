@@ -32,26 +32,17 @@ pub fn records(path: &Path, result: &mut SourceScan) -> io::Result<(Vec<Value>, 
     let end = head.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
     head.truncate(end);
     let mut records = parse(&head, result);
-    let start = size.saturating_sub(TAIL_BYTES).max(end as u64);
-    let gap = start > end as u64;
-    let mut aligned = true;
-    if gap {
-        file.seek(SeekFrom::Start(start - 1))?;
-        let mut previous = [0];
-        file.read_exact(&mut previous)?;
-        aligned = previous[0] == b'\n';
-    } else {
-        file.seek(SeekFrom::Start(start))?;
+    let candidate = size.saturating_sub(TAIL_BYTES).max(end as u64);
+    let start = aligned_tail_start(&mut file, candidate, end as u64, size)?.unwrap_or(end as u64);
+    if size - start > FALLBACK_BYTES {
+        return Err(io::Error::other(
+            "no complete tail boundary; fallback exceeds 64 MiB",
+        ));
     }
+    let gap = start > end as u64;
+    file.seek(SeekFrom::Start(start))?;
     let mut tail = Vec::new();
     (&mut file).take(size - start).read_to_end(&mut tail)?;
-    if !aligned {
-        let cut = tail
-            .iter()
-            .position(|b| *b == b'\n')
-            .map_or(tail.len(), |i| i + 1);
-        tail.drain(..cut);
-    }
     let mut sampled = SourceScan::default();
     let tail_records = parse(&tail, &mut sampled);
     if tail_records.is_empty() {
@@ -70,6 +61,39 @@ pub fn records(path: &Path, result: &mut SourceScan) -> io::Result<(Vec<Value>, 
     let boundary = gap.then_some(records.len());
     records.extend(tail_records);
     Ok((records, boundary))
+}
+
+/// Include the record crossing the nominal tail window, even when later complete
+/// records exist. Never scan or allocate beyond the bounded fallback budget.
+fn aligned_tail_start(
+    file: &mut File,
+    start: u64,
+    head_end: u64,
+    size: u64,
+) -> io::Result<Option<u64>> {
+    if start == head_end {
+        return Ok(Some(start));
+    }
+    file.seek(SeekFrom::Start(start - 1))?;
+    let mut previous = [0];
+    file.read_exact(&mut previous)?;
+    if previous[0] == b'\n' {
+        return Ok(Some(start));
+    }
+    let limit = size.saturating_sub(FALLBACK_BYTES).max(head_end);
+    let mut cursor = start;
+    let mut block = Vec::new();
+    while cursor > limit {
+        let lower = cursor.saturating_sub(TAIL_BYTES).max(limit);
+        block.resize((cursor - lower) as usize, 0);
+        file.seek(SeekFrom::Start(lower))?;
+        file.read_exact(&mut block)?;
+        if let Some(index) = block.iter().rposition(|b| *b == b'\n') {
+            return Ok(Some(lower + index as u64 + 1));
+        }
+        cursor = lower;
+    }
+    Ok((limit == head_end).then_some(head_end))
 }
 
 fn parse(bytes: &[u8], result: &mut SourceScan) -> Vec<Value> {
@@ -202,7 +226,13 @@ pub fn timestamp(value: &Value) -> Option<i64> {
     {
         return None;
     }
-    let number = |a, z| std::str::from_utf8(&b[a..z]).ok()?.parse::<i64>().ok();
+    let number = |a, z| {
+        let digits = &b[a..z];
+        if !digits.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        std::str::from_utf8(digits).ok()?.parse::<i64>().ok()
+    };
     let (mut y, m, d) = (number(0, 4)?, number(5, 7)?, number(8, 10)?);
     let (h, min, sec) = (number(11, 13)?, number(14, 16)?, number(17, 19)?);
     let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);

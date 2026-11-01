@@ -30,3 +30,8 @@ stores. Broken output pipes exit 0.
 State: `~/.local/state/sboard/state.toml` (override `SBOARD_STATE_DIR`). Config:
 `~/.config/sboard/config.toml` (override `SBOARD_CONFIG_DIR`); every key is optional and the
 defaults are in `docs/PLAN.md` §6.
+
+Config, state and the optional Codex title index are checked as regular files before
+reading. FIFOs, devices, directories and symlink files are rejected without opening
+them; bad config is an error, bad state warns and uses empty state, and a bad index
+warns/counts a skipped store while falling back to prompt titles.

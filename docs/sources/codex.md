@@ -9,6 +9,8 @@ Only the **first session_meta** supplies identity, provenance and cwd. Keep expl
 exec). Reject object sources and every explicit non-user thread_source. Later metas
 are ignored, including a parent's meta embedded in a subagent rollout. App-server
 sessions omit thread_source; this is current live data, not an older format to drop.
+Native IDs are cleaned like titles and skipped/countable when the result is empty;
+index ID lookup uses the same cleanup. Resume hints use the cleaned native ID.
 Turn_context cwd changes never move the session. Empty/relative first cwds skip with
 a count. IDs are `codex:<native-id>`; resume hints use the native ID. Project identity
 uses shared path normalization; worktrees remain separate projects.
@@ -19,21 +21,26 @@ Ignore developer messages, reasoning, token_count, token_usage_record,
 thread_settings_applied, world_state, additional_tools and unknown types.
 Tool output exit codes are not API errors.
 
-Titles prefer session_index thread_name (last index entry wins), then the first
+Titles prefer a nonempty cleaned session_index thread_name (last index entry wins), then the first
 user_message or item_completed UserMessage, then the first user response_item whose
 text does not start with `<` or `#`. Last user text uses the same precedence with
 the latest eligible text. Fallback titles are cut to 60 Unicode characters. Titles
 collapse whitespace and remove controls and escape commands before reaching text
 output; last user/assistant text retains transcript prose for the future detail pane.
 
-Read 256 KiB of head and 64 KiB of tail, retaining complete lines at aligned seams.
-If the tail contains no complete record, read from the end of the complete head to
-EOF, capped at 64 MiB; larger fallbacks skip the session with a count and reason.
+Read 256 KiB of head and a nominal 64 KiB tail. When the tail starts inside a record,
+scan backwards in 64 KiB steps to its beginning (or head end), capped at 64 MiB;
+complete following records must not hide the crossing record. Keep exact line
+boundaries intact. If the tail contains no complete record, retain the head-end-to-EOF
+fallback, capped at 64 MiB; larger reads skip the session with a count and reason.
 Sampled malformed/truncated/invalid-UTF-8 records increment skipped lines; seam
 fragments do not. Missing/unreadable stores increment skipped stores. Empty files,
 invalid cwds, excluded provenance and unreadable transcripts increment skipped
 sessions. Corruption in an omitted middle is not counted. Malformed title-index
-records increment skipped lines. Doctor scans all ages; list applies its window.
+records increment skipped lines. The optional index must be a regular file, checked
+with symlink_metadata before open; FIFOs, symlinks and other nonregular paths produce
+a skipped-store count and a path-specific warning. Missing index is optional.
+Doctor scans all ages; list applies its window.
 
 A head task_started survives the gap until a tail task event overrides it. Pending
 tasks or unanswered calls mean working below 1800 seconds, error at/after 1800.
@@ -74,3 +81,8 @@ sessions and resetting task state made active/stuck tasks idle. Those bugs are
 fixed. The 30-minute threshold is the agreed calibration for long tools/subagents;
 transcripts still cannot prove process liveness. The waiting heuristic remains as
 specified, with no prior-turn text reused for completion.
+
+Round 3 tests in `tests/round2.rs` also cover printable/empty native IDs, signed
+numeric timestamp fields, a FIFO index (both list and doctor complete within the
+test deadline), FIFO config/state paths, and control-only index titles falling
+through to actual owner text. Numeric timestamp fields accept ASCII digits only.

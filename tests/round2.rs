@@ -509,10 +509,12 @@ fn issue23_fallback_limit_skips_instead_of_listing_old_head() {
     fs::write(&path, encode(&[tool()])).unwrap();
     fs::OpenOptions::new()
         .write(true)
-        .open(path)
+        .open(&path)
         .unwrap()
-        .set_len(65 * 1024 * 1024)
+        .set_len(70 * 1024 * 1024)
         .unwrap();
+    let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+    std::io::Write::write_all(&mut file, b"\n{\"type\":\"attachment\"}\n").unwrap();
     let scanned = Claude {
         root: temp.path().into(),
         now: NOW,
@@ -541,4 +543,266 @@ fn issue23_total_file_sizes_around_head_and_tail_budgets() {
             "file size {size}"
         );
     }
+}
+
+#[test]
+fn round3_straddling_message_is_kept_before_complete_ignored_records() {
+    let mut old = claude_record("user", json!("Old placeholder"));
+    old["timestamp"] = json!("2026-10-24T12:00:00Z");
+    let text = encode(&[
+        old,
+        json!({"type":"attachment","padding":"p".repeat(400_000)}),
+        claude_record("user", json!("p".repeat(100_000))),
+        json!({"type":"attachment"}),
+    ]);
+    let scanned = claude_text(&text);
+    assert_eq!(
+        scanned.sessions.len(),
+        1,
+        "fresh message must remain inside default window"
+    );
+    assert_eq!(scanned.sessions[0].status, Status::Working);
+    assert_eq!(scanned.sessions[0].last_activity_at, NOW - 5);
+    assert_eq!(
+        scanned.skipped_lines, 0,
+        "backward alignment must not parse a fragment"
+    );
+}
+
+#[test]
+fn round3_native_ids_are_printable_and_empty_ids_are_counted() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir_all(temp.path().join("claude/projects/project")).unwrap();
+    fs::create_dir_all(temp.path().join("codex/sessions")).unwrap();
+    let claude_path = temp.path().join("claude/projects/project/session.jsonl");
+    let codex_path = temp.path().join("codex/sessions/rollout-session.jsonl");
+    for id in ["evil\nFORGED\u{1b}[2J", "\u{1}\u{7}\u{1b}[31m"] {
+        let mut c = ended("Assistant placeholder");
+        c["sessionId"] = json!(id);
+        let mut m = meta();
+        m["payload"]["id"] = json!(id);
+        fs::write(&claude_path, encode(&[c])).unwrap();
+        fs::write(&codex_path, encode(&[m])).unwrap();
+        if id.starts_with("evil") {
+            let output = command(temp.path())
+                .args(["list", "--json", "--all"])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            let projects: Value = serde_json::from_slice(&output.stdout).unwrap();
+            let sessions = projects[0]["sessions"].as_array().unwrap();
+            assert_eq!(sessions.len(), 2);
+            for session in sessions {
+                let agent = session["agent"].as_str().unwrap();
+                assert_eq!(session["id"], format!("{agent}:evil FORGED"));
+            }
+            let output = command(temp.path())
+                .args(["list", "--all"])
+                .output()
+                .unwrap();
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert_eq!(
+                text.lines().count(),
+                3,
+                "one header and two session rows: {text:?}"
+            );
+            assert!(!text.chars().any(|c| c.is_control() && c != '\n'));
+        } else {
+            let c = Claude {
+                root: temp.path().join("claude/projects"),
+                now: NOW,
+            }
+            .scan(&Config::default());
+            assert!(c.sessions.is_empty());
+            assert_eq!(c.skipped_sessions, 1);
+            let c = Codex {
+                root: temp.path().join("codex/sessions"),
+                index: temp.path().join("missing"),
+                now: NOW,
+            }
+            .scan(&Config::default());
+            assert!(c.sessions.is_empty());
+            assert_eq!(c.skipped_sessions, 1);
+        }
+    }
+}
+
+#[test]
+fn round3_project_filter_accepts_a_file_inside_the_project() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(repo.join("nested")).unwrap();
+    common::git(&repo, &["init", "-q"]);
+    let file = repo.join("nested/file.txt");
+    fs::write(&file, "placeholder").unwrap();
+    fs::create_dir_all(temp.path().join("claude/projects/project")).unwrap();
+    let mut row = ended("Assistant placeholder");
+    row["cwd"] = json!(repo);
+    fs::write(
+        temp.path().join("claude/projects/project/session.jsonl"),
+        encode(&[row]),
+    )
+    .unwrap();
+    let output = command(temp.path())
+        .args(["list", "--json", "--all", "--project"])
+        .arg(file)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let projects: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(projects.as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn round3_signed_timestamp_fields_are_skipped_lines() {
+    let invalid = [
+        "2026-11-01T+1:00:00Z",
+        "2026-+1-01T12:00:00Z",
+        "2026-11-01T12:00:00+00:-1",
+    ];
+    let mut c = vec![ended("Assistant placeholder")];
+    let mut x = vec![meta()];
+    for time in invalid {
+        let mut row = claude_record("user", json!("Placeholder"));
+        row["timestamp"] = json!(time);
+        c.push(row);
+        let mut row = event("task_started");
+        row["timestamp"] = json!(time);
+        x.push(row);
+    }
+    let scanned = claude(&c);
+    assert_eq!(scanned.skipped_lines, 3);
+    assert_eq!(scanned.sessions[0].last_activity_at, NOW - 5);
+    assert_eq!(scanned.sessions[0].status, Status::Done);
+    let scanned = codex(&x);
+    assert_eq!(scanned.skipped_lines, 3);
+    assert_eq!(scanned.sessions[0].last_activity_at, NOW - 5);
+    assert_eq!(scanned.sessions[0].status, Status::Idle);
+}
+
+#[test]
+fn round3_quoted_interruption_in_user_prose_means_working() {
+    assert_eq!(
+        claude(&[claude_record(
+            "user",
+            json!("Explain why the log says [Request interrupted by user] and fix it")
+        )])
+        .sessions[0]
+            .status,
+        Status::Working
+    );
+    assert_eq!(
+        claude(&[claude_record(
+            "user",
+            json!("[Request interrupted by user for tool use]")
+        )])
+        .sessions[0]
+            .status,
+        Status::Idle
+    );
+}
+
+#[cfg(unix)]
+fn bounded_output(mut command: Command) -> std::process::Output {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            return child.wait_with_output().unwrap();
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            let output = child.wait_with_output().unwrap();
+            panic!("command blocked on a special file: {output:?}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+#[cfg(unix)]
+fn fifo(path: &Path) {
+    assert!(Command::new("mkfifo").arg(path).status().unwrap().success());
+}
+
+#[test]
+#[cfg(unix)]
+fn round3_fifo_title_index_never_blocks_list_or_doctor() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir_all(temp.path().join("codex/sessions")).unwrap();
+    let path = temp.path().join("codex/session_index.jsonl");
+    fifo(&path);
+    for args in [["list", "--json"], ["doctor", "--json"]] {
+        let mut cmd = command(temp.path());
+        cmd.args(args);
+        let output = bounded_output(cmd);
+        assert!(output.status.success());
+        if args[0] == "list" {
+            assert!(
+                String::from_utf8(output.stderr)
+                    .unwrap()
+                    .contains(path.to_str().unwrap())
+            );
+        } else {
+            let stores: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(stores[1]["skipped_stores"], 1);
+            assert!(
+                stores[1]["warnings"][0]
+                    .as_str()
+                    .unwrap()
+                    .contains(path.to_str().unwrap())
+            );
+        }
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn round3_fifo_config_and_state_never_block_list() {
+    for which in ["config", "state"] {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("claude/projects")).unwrap();
+        fs::create_dir(temp.path().join(which)).unwrap();
+        let path = temp.path().join(which).join(format!("{which}.toml"));
+        fifo(&path);
+        let mut cmd = command(temp.path());
+        cmd.args(["list", "--json"]);
+        let output = bounded_output(cmd);
+        assert_eq!(
+            output.status.code(),
+            Some(if which == "config" { 1 } else { 0 })
+        );
+        assert!(
+            String::from_utf8(output.stderr)
+                .unwrap()
+                .contains(path.to_str().unwrap())
+        );
+    }
+}
+
+#[test]
+fn round3_control_only_index_title_falls_through_to_owner_prompt() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut user = event("user_message");
+    user["payload"]["message"] = json!("Owner placeholder");
+    fs::write(
+        temp.path().join("rollout-session.jsonl"),
+        encode(&[meta(), user]),
+    )
+    .unwrap();
+    let index = temp.path().join("session_index.jsonl");
+    fs::write(
+        &index,
+        encode(&[json!({"id":"session","thread_name":"\u{1}\u{7}\u{1b}[31m"})]),
+    )
+    .unwrap();
+    let scanned = Codex {
+        root: temp.path().into(),
+        index,
+        now: NOW,
+    }
+    .scan(&Config::default());
+    assert_eq!(scanned.sessions[0].title, "Owner placeholder");
 }

@@ -40,6 +40,13 @@ impl Source for Codex {
 }
 fn titles(path: &Path, result: &mut SourceScan) -> HashMap<String, String> {
     let mut titles = HashMap::new();
+    if let Err(error) = crate::storage::regular_file(path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            result.skipped_stores += 1;
+            result.warnings.push(format!("{}: {error}", path.display()));
+        }
+        return titles;
+    }
     let file = match File::open(path) {
         Ok(f) => f,
         Err(e) => {
@@ -59,7 +66,10 @@ fn titles(path: &Path, result: &mut SourceScan) -> HashMap<String, String> {
         }
         match serde_json::from_slice::<serde_json::Value>(&line) {
             Ok(v) if v["id"].is_string() && v["thread_name"].is_string() => {
-                titles.insert(read::string(&v, "id"), read::string(&v, "thread_name"));
+                titles.insert(
+                    read::title(&read::string(&v, "id")),
+                    read::string(&v, "thread_name"),
+                );
             }
             _ => result.skipped_lines += 1,
         }
@@ -109,7 +119,10 @@ fn session(
             if !owner || p["source"].is_object() {
                 return None;
             }
-            identity = Some((read::string(p, "id"), PathBuf::from(read::string(p, "cwd"))));
+            identity = Some((
+                read::title(&read::string(p, "id")),
+                PathBuf::from(read::string(p, "cwd")),
+            ));
         }
         if kind == "response_item"
             && p["type"] == "message"
@@ -246,8 +259,8 @@ fn session(
     }
     let title = titles
         .get(&id)
-        .filter(|s| !s.is_empty())
         .map(|s| read::title(s))
+        .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
             read::title(&first_event_user.or(first_fallback_user).unwrap_or_default())
                 .chars()

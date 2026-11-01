@@ -1,7 +1,7 @@
 use crate::{model::Agent, storage};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs, io,
+    io,
     path::{Path, PathBuf},
 };
 
@@ -72,7 +72,7 @@ impl Config {
     /// Missing file: defaults. Unknown keys: warnings. A bad value or an unreadable file is an
     /// error that names the file (#15).
     pub fn load(path: &Path) -> io::Result<(Self, Vec<String>)> {
-        let text = match fs::read_to_string(path) {
+        let text = match storage::read_text(path) {
             Ok(text) => text,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Ok((Self::default(), vec![]));

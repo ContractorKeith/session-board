@@ -19,3 +19,8 @@ sboard directories and both agent homes; tests never read the owner's stores.
 `tests/round2.rs` builds deterministic temporary transcript fixtures for issues #21–#32,
 including exact-size records and sparse files over the fallback cap. Source pages map
 these regression names to the observed live failures.
+
+Round 3 cases in the same test file cover backward tail alignment with complete
+ignored records following the crossing message, ID cleanup, file project filters,
+ASCII-only timestamp fields, interruption prefixes, FIFO paths and cleaned title
+fallback. FIFO tests kill a blocked child after three seconds instead of hanging CI.
