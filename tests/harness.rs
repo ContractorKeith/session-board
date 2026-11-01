@@ -581,6 +581,8 @@ fn symlinked_config_and_state_files_load() {
     fs::create_dir_all(&real).unwrap();
     fs::create_dir_all(&config_dir).unwrap();
     fs::create_dir_all(&state_dir).unwrap();
+    // An empty but present store keeps the exit code at 0 (exit 2 means no stores found).
+    fs::create_dir_all(temp.path().join(".claude/projects")).unwrap();
     fs::write(real.join("config.toml"), "roots = ['/from-link']\n").unwrap();
     fs::write(real.join("state.toml"), "pins = ['/from-link']\n").unwrap();
     symlink(real.join("config.toml"), config_dir.join("config.toml")).unwrap();
