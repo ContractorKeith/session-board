@@ -9,9 +9,9 @@ MIT. "Done" for v1 is every row marked v1 in `docs/PLAN.md` §4 passing the acce
 §10 on Omarchy, the Mac Studio and GitHub Actions.
 
 ## Status
-M0 in review — 2026-11-01: model, Source trait, fixture harness, state and config files, CI on
-Linux and macOS (PR #9). No real source or TUI yet; `sboard list --json` prints `[]`. Skeptic
-round 1 filed #10–#18; the six bugs are fixed on the PR branch. M1 is next.
+M1 in review — 2026-11-01: Claude Code and Codex sources, transcript status rules,
+filtered list, doctor counts, normalized project identity and agent-prefixed session IDs.
+Fixture/golden coverage and Linux/macOS CI; no TUI yet (M2). M0 merged in PR #9.
 
 ## Commands
 ```bash

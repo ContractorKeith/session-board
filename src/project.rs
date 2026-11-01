@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::Command,
 };
 
@@ -25,7 +25,17 @@ impl ProjectRoots {
     pub fn resolve(&mut self, cwd: &Path) -> PathBuf {
         self.cache
             .entry(cwd.to_owned())
-            .or_insert_with(|| git_root(cwd).unwrap_or_else(|| cwd.to_owned()))
+            .or_insert_with(|| {
+                let normalized = normalize(cwd, None).unwrap_or_else(|| cwd.to_owned());
+                let directory = normalized
+                    .ancestors()
+                    .find(|p| p.file_name().is_some_and(|n| n == ".git"))
+                    .and_then(Path::parent)
+                    .unwrap_or(&normalized);
+                git_root(directory)
+                    .and_then(|p| normalize(&p, None))
+                    .unwrap_or_else(|| directory.to_owned())
+            })
             .clone()
     }
 }
@@ -59,5 +69,69 @@ fn git_root(cwd: &Path) -> Option<PathBuf> {
             .ok()
             .filter(|s| !s.is_empty())
             .map(PathBuf::from)
+    }
+}
+
+/// One identity for existing symlinks and missing paths. Relative session cwds are
+/// rejected by sources; config paths may expand a leading home component.
+pub fn normalize(path: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let expanded;
+    let path = if let Ok(suffix) = path.strip_prefix("~") {
+        expanded = home?.join(suffix);
+        expanded.as_path()
+    } else {
+        path
+    };
+    if !path.is_absolute() {
+        return None;
+    }
+    if let Ok(path) = std::fs::canonicalize(path) {
+        return Some(path);
+    }
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                result.pop();
+            }
+            Component::CurDir => (),
+            other => result.push(other.as_os_str()),
+        }
+    }
+    Some(result)
+}
+
+pub fn normalize_settings(
+    config: &mut crate::config::Config,
+    state: &mut crate::state::State,
+    home: &Path,
+) {
+    config.roots = config
+        .roots
+        .iter()
+        .filter_map(|p| normalize(p, Some(home)))
+        .collect();
+    config.roots.sort();
+    config.roots.dedup();
+    state.pins = state
+        .pins
+        .iter()
+        .filter_map(|p| normalize(p, Some(home)))
+        .collect();
+    let mut tags = std::collections::BTreeMap::<PathBuf, Vec<String>>::new();
+    for (path, values) in &state.tags {
+        if let Some(path) = normalize(path, Some(home)) {
+            tags.entry(path).or_default().extend(values.iter().cloned());
+        }
+    }
+    for values in tags.values_mut() {
+        values.sort();
+        values.dedup();
+    }
+    state.tags = tags;
+    for entry in &mut state.archived {
+        if let Some(path) = normalize(Path::new(entry), Some(home)) {
+            *entry = path.to_string_lossy().into_owned();
+        }
     }
 }

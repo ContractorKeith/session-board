@@ -6,9 +6,26 @@ project, shows working / waiting / idle / error / done, jumps to the tmux pane o
 session, and launches new sessions in a project or a fresh git worktree. Observes agents; never
 owns them. MIT.
 
-Status: M0 (model, Source trait, state and config, fixtures, CI) is in. No real sources or
-TUI yet; `sboard list --json` prints `[]`. See `docs/PLAN.md` for the milestones and `AGENTS.md`
-for commands. The package is `session-board`; the binary is `sboard`.
+Status: M1 in review: Claude Code and Codex sources, transcript status rules, filtered
+`list` and doctor counts. TUI arrives in M2. See `docs/PLAN.md` for milestones and
+`AGENTS.md` for commands. The package is `session-board`; the binary is `sboard`.
+
+```bash
+sboard list --json
+sboard list --status attention --agent codex
+sboard list --project ~/Projects/example --all
+sboard doctor
+```
+
+List uses a seven-day window by default. `--all` also includes archived sessions and
+projects. Attention sorts waiting, error, then done-unread within each project;
+projects sort by their highest-priority session, then its activity. Normal lists
+sort projects by pin and activity, sessions by activity. No read mark still means
+unread in M1; first-run semantics remain M4's decision (#16). IDs include the agent
+prefix. With no enabled implemented store found, list emits its tree and exits 2;
+a found but empty store succeeds. Doctor is diagnostic and succeeds with missing
+stores. Broken output pipes exit 0.
+
 
 State: `~/.local/state/sboard/state.toml` (override `SBOARD_STATE_DIR`). Config:
 `~/.config/sboard/config.toml` (override `SBOARD_CONFIG_DIR`); every key is optional and the

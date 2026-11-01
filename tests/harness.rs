@@ -40,6 +40,7 @@ impl Source for FakeSource {
             skipped_lines: 2,
             skipped_stores: 1,
             warnings: vec!["fixture warning".into()],
+            ..SourceScan::default()
         }
     }
 }
@@ -298,13 +299,15 @@ fn project_roots_git_nested_worktree_missing_and_cached() {
 fn command(temp: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_sboard"));
     command
+        .env("CLAUDE_CONFIG_DIR", temp.join(".claude"))
+        .env("CODEX_HOME", temp.join(".codex"))
         .env("SBOARD_STATE_DIR", temp.join("state"))
         .env("SBOARD_CONFIG_DIR", temp.join("config"));
     command
 }
 
 #[test]
-fn empty_fixture_list_matches_golden_and_cli_contract() {
+fn empty_stores_list_and_cli_contract() {
     let temp = tempfile::tempdir().unwrap();
     let fixture_dir = temp.path().join("fixtures");
     fs::create_dir(&fixture_dir).unwrap();
@@ -313,11 +316,8 @@ fn empty_fixture_list_matches_golden_and_cli_contract() {
         .args(["list", "--json"])
         .output()
         .unwrap();
-    assert!(output.status.success());
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        include_str!("../fixtures/list.json")
-    );
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "[]\n");
     assert!(output.stderr.is_empty());
     let output = command(temp.path()).arg("version").output().unwrap();
     assert!(output.status.success());
@@ -351,7 +351,7 @@ fn cli_uses_directory_overrides_and_reports_warnings() {
         .args(["list", "--json"])
         .output()
         .unwrap();
-    assert!(output.status.success());
+    assert_eq!(output.status.code(), Some(2));
     let projects: Vec<Project> = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[0].root, Path::new("/extra"));
@@ -361,7 +361,7 @@ fn cli_uses_directory_overrides_and_reports_warnings() {
 }
 
 #[test]
-fn doctor_reports_known_paths_without_reading_stores() {
+fn doctor_reports_known_paths_and_missing_stores() {
     let temp = tempfile::tempdir().unwrap();
     fs::create_dir_all(temp.path().join(".claude/projects")).unwrap();
     let output = command(temp.path())
@@ -428,13 +428,15 @@ fn empty_overrides_count_as_unset() {
     fs::write(cwd.join("config.toml"), "roots = ['/from-cwd']\n").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_sboard"))
         .env("HOME", &home)
+        .env("CLAUDE_CONFIG_DIR", "")
+        .env("CODEX_HOME", "")
         .env("SBOARD_STATE_DIR", "")
         .env("SBOARD_CONFIG_DIR", "")
         .current_dir(&cwd)
         .args(["list", "--json"])
         .output()
         .unwrap();
-    assert!(output.status.success());
+    assert_eq!(output.status.code(), Some(2));
     let projects: Vec<Project> = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[0].root, Path::new("/from-home"));

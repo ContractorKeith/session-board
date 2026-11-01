@@ -9,6 +9,7 @@ pub struct Scan {
     pub projects: Vec<Project>,
     pub skipped_lines: usize,
     pub skipped_stores: usize,
+    pub skipped_sessions: usize,
     pub warnings: Vec<String>,
 }
 
@@ -33,6 +34,7 @@ pub fn scan(
         let scanned = source.scan(config);
         result.skipped_lines += scanned.skipped_lines;
         result.skipped_stores += scanned.skipped_stores;
+        result.skipped_sessions += scanned.skipped_sessions;
         result.warnings.extend(scanned.warnings);
         for mut session in scanned.sessions {
             session.project_root = resolve(&session.cwd);
