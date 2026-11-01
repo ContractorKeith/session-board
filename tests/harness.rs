@@ -292,7 +292,15 @@ fn project_roots_git_nested_worktree_missing_and_cached() {
     assert_eq!(roots.resolve(&nested), Path::new(&expected));
     let missing = temp.path().join("missing");
     assert_eq!(roots.resolve(&missing), missing);
-    assert_eq!(roots.resolve(temp.path()), temp.path());
+    let canonical = fs::canonicalize(temp.path()).unwrap();
+    assert_eq!(roots.resolve(temp.path()), canonical);
+    #[cfg(unix)]
+    {
+        // macOS temp roots have a symlinked prefix; exercise that case on Linux too.
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(temp.path(), &alias).unwrap();
+        assert_eq!(roots.resolve(&alias), canonical);
+    }
 }
 
 /// All subprocesses receive both overrides, never touching the owner's sboard files.
