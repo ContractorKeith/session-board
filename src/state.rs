@@ -21,28 +21,28 @@ impl State {
         Ok(storage::directory("SBOARD_STATE_DIR", ".local/state/sboard")?.join("state.toml"))
     }
 
-    /// A corrupt file is reported to the caller and treated as empty.
+    /// A missing file is empty state. Anything else that keeps the file from loading
+    /// (bad TOML, invalid UTF-8, a directory, no permission) is reported to the caller
+    /// and treated as empty; state is never a reason for a command to fail (#11).
     pub fn load(path: &Path) -> io::Result<(Self, Vec<String>)> {
         let text = match fs::read_to_string(path) {
             Ok(text) => text,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Ok((Self::default(), vec![]));
             }
-            Err(error) => return Err(error),
+            Err(error) => return Ok((Self::default(), vec![corrupt(path, error)])),
         };
         match toml::from_str(&text) {
             Ok(state) => Ok((state, vec![])),
-            Err(error) => Ok((
-                Self::default(),
-                vec![format!(
-                    "{}: corrupt state ignored: {error}",
-                    path.display()
-                )],
-            )),
+            Err(error) => Ok((Self::default(), vec![corrupt(path, error)])),
         }
     }
 
     pub fn save(&self, path: &Path) -> io::Result<()> {
         storage::write_toml(path, self)
     }
+}
+
+fn corrupt(path: &Path, error: impl std::fmt::Display) -> String {
+    format!("{}: corrupt state ignored: {error}", path.display())
 }

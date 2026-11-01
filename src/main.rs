@@ -6,7 +6,7 @@ use session_board::{
     scan, source,
     state::State,
 };
-use std::{env, io, path::PathBuf};
+use std::io::{self, Write};
 
 fn main() {
     let cli = Cli::try_parse().unwrap_or_else(|error| {
@@ -15,20 +15,21 @@ fn main() {
         std::process::exit(code);
     });
     if let Err(error) = run(cli) {
+        // A reader that went away (`sboard list | head`) is not an error worth a word (#10).
+        if error.kind() == io::ErrorKind::BrokenPipe {
+            std::process::exit(0);
+        }
         eprintln!("sboard: {error}");
         std::process::exit(1);
     }
 }
 
 fn run(cli: Cli) -> io::Result<()> {
+    let mut out = io::stdout().lock();
     match cli.command {
-        None => println!("TUI lands in M2"),
-        Some(Commands::Version) => println!("{}", env!("CARGO_PKG_VERSION")),
-        Some(Commands::Doctor { json }) => {
-            let home = env::var_os("HOME")
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?;
-            cli::doctor(&PathBuf::from(home), json)?;
-        }
+        None => writeln!(out, "TUI lands in M2")?,
+        Some(Commands::Version) => writeln!(out, "{}", env!("CARGO_PKG_VERSION"))?,
+        Some(Commands::Doctor { json }) => cli::doctor(&mut out, &cli::home()?, json)?,
         Some(Commands::List { json }) => {
             let (config, warnings) = Config::load(&Config::path()?)?;
             let (state, state_warnings) = State::load(&State::path()?)?;
@@ -44,17 +45,18 @@ fn run(cli: Cli) -> io::Result<()> {
                 eprintln!("sboard: {warning}");
             }
             if json {
-                println!("{}", serde_json::to_string_pretty(&result.projects)?);
+                writeln!(out, "{}", serde_json::to_string_pretty(&result.projects)?)?;
             } else {
                 for project in result.projects {
-                    println!(
+                    writeln!(
+                        out,
                         "{} ({} sessions)",
                         project.root.display(),
                         project.sessions.len()
-                    );
+                    )?;
                 }
             }
         }
     }
-    Ok(())
+    out.flush()
 }

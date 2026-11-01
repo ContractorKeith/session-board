@@ -100,7 +100,8 @@ src/source/opencode.rs                             (M6)
 src/status.rs        transcript tail -> Status; the recency rules
 src/state.rs         pins, tags, read marks, archive; atomic TOML
 src/config.rs        config.toml with defaults
-src/scan.rs          run all sources, group into projects, apply state
+src/scan.rs          run all sources, group into projects, apply state (no I/O; roots come in)
+src/project.rs       project root per cwd via `git rev-parse --show-toplevel`, cached
 src/watch.rs         notify watcher -> debounced rescan
 src/tmux.rs          pane discovery, switch, new-window
 src/launch.rs        resume and launch commands, worktree creation
@@ -114,7 +115,8 @@ docs/sources/<agent>.md  one page per source: paths, line types, status rules
 Rules that hold the shape:
 
 - `model`, `status`, `state`, `scan` and `ui` never touch the filesystem outside the state and
-  config files. Sources read agent stores; `tmux` and `launch` run processes. Nothing else does.
+  config files. Sources read agent stores; `project` runs `git rev-parse` to find roots;
+  `tmux` and `launch` run processes. Nothing else does.
 - Sources are read-only and tolerant: a malformed line is skipped and counted, never fatal.
   `doctor` reports the counts. A missing store is a skipped source, not an error.
 - Status is derived from the transcript, not from screen scraping. The tmux pane, when found,

@@ -1,7 +1,8 @@
+use crate::storage;
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 use std::{
-    io,
+    io::{self, Write},
     path::{Path, PathBuf},
 };
 
@@ -57,20 +58,26 @@ pub fn stores(home: &Path) -> Vec<Store> {
     .collect()
 }
 
-pub fn doctor(home: &Path, json: bool) -> io::Result<()> {
+/// The home directory doctor inspects; empty `HOME` counts as unset.
+pub fn home() -> io::Result<PathBuf> {
+    storage::home()
+}
+
+pub fn doctor(out: &mut impl Write, home: &Path, json: bool) -> io::Result<()> {
     let stores = stores(home);
     if json {
-        println!("{}", serde_json::to_string_pretty(&stores)?);
+        writeln!(out, "{}", serde_json::to_string_pretty(&stores)?)?;
     } else {
         for store in stores {
-            println!(
+            writeln!(
+                out,
                 "{}: {} ({})",
                 store.agent,
                 store.path.display(),
                 if store.exists { "found" } else { "missing" }
-            );
+            )?;
         }
-        println!("Source scanning lands in M1; no agent stores read.");
+        writeln!(out, "Source scanning lands in M1; no agent stores read.")?;
     }
     Ok(())
 }

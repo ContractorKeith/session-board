@@ -9,15 +9,16 @@ MIT. "Done" for v1 is every row marked v1 in `docs/PLAN.md` §4 passing the acce
 §10 on Omarchy, the Mac Studio and GitHub Actions.
 
 ## Status
-Planned — 2026-11-01: plan, glossary, two ADRs and eight milestone issues written. No code yet.
-M0 (model, Source trait, fixtures, state and config, CI) is next and lands alone.
+M0 in review — 2026-11-01: model, Source trait, fixture harness, state and config files, CI on
+Linux and macOS (PR #9). No real source or TUI yet; `sboard list --json` prints `[]`. Skeptic
+round 1 filed #10–#18; the six bugs are fixed on the PR branch. M1 is next.
 
 ## Commands
 ```bash
 cargo build --release          # target/release/sboard
-cargo test                     # unit tests on fixtures, no live agent needed
+cargo test --locked            # unit tests on fixtures, no live agent needed
 cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings
+cargo clippy --locked --all-targets -- -D warnings
 cargo run -- list --json       # cold scan of the real stores on this machine
 cargo run -- doctor
 ```

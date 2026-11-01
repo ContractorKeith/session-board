@@ -69,19 +69,21 @@ impl Config {
         Ok(storage::directory("SBOARD_CONFIG_DIR", ".config/sboard")?.join("config.toml"))
     }
 
+    /// Missing file: defaults. Unknown keys: warnings. A bad value or an unreadable file is an
+    /// error that names the file (#15).
     pub fn load(path: &Path) -> io::Result<(Self, Vec<String>)> {
         let text = match fs::read_to_string(path) {
             Ok(text) => text,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Ok((Self::default(), vec![]));
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(storage::at(path, error)),
         };
-        let value: toml::Value = toml::from_str(&text).map_err(io::Error::other)?;
+        let value: toml::Value = toml::from_str(&text).map_err(|e| storage::at(path, e))?;
         let schema = toml::Value::try_from(Self::default()).map_err(io::Error::other)?;
         let mut warnings = vec![];
         unknown_keys(&value, &schema, "", &mut warnings);
-        let config = value.try_into().map_err(io::Error::other)?;
+        let config = value.try_into().map_err(|e| storage::at(path, e))?;
         Ok((config, warnings))
     }
 

@@ -219,8 +219,20 @@ fn config_every_key_optional_and_unknown_keys_warn() {
     assert!(Config::load(&path).is_err());
 }
 
+/// Hermetic git: no inherited GIT_DIR (a hook running `cargo test` would otherwise commit
+/// into the developer's repo) and no global config (gpgsign, hooks path, identity).
 fn git(directory: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_COMMON_DIR")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.com")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.com")
         .args(args)
         .current_dir(directory)
         .output()
@@ -381,4 +393,200 @@ fn doctor_reports_known_paths_without_reading_stores() {
         assert_eq!(store["path"], temp.path().join(suffix).to_str().unwrap());
         assert_eq!(store["exists"], exists);
     }
+}
+
+/// #11: anything that keeps state.toml from loading is a warning plus empty state.
+#[test]
+fn unreadable_state_is_warned_about_and_treated_as_empty() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("state.toml");
+    fs::write(&path, b"tags = { \"/p\" = [\"caf\xc3").unwrap();
+    let (state, warnings) = State::load(&path).unwrap();
+    assert_eq!(state, State::default());
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].starts_with(&format!("{}: corrupt state ignored", path.display())));
+    let dir = temp.path().join("dir");
+    fs::create_dir(&dir).unwrap();
+    let (state, warnings) = State::load(&dir).unwrap();
+    assert_eq!(state, State::default());
+    assert_eq!(warnings.len(), 1);
+}
+
+/// #12: an exported-but-empty override falls back to the default under HOME.
+#[test]
+fn empty_overrides_count_as_unset() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    fs::create_dir_all(home.join(".config/sboard")).unwrap();
+    fs::write(
+        home.join(".config/sboard/config.toml"),
+        "roots = ['/from-home']\n",
+    )
+    .unwrap();
+    let cwd = temp.path().join("cwd");
+    fs::create_dir(&cwd).unwrap();
+    fs::write(cwd.join("config.toml"), "roots = ['/from-cwd']\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_sboard"))
+        .env("HOME", &home)
+        .env("SBOARD_STATE_DIR", "")
+        .env("SBOARD_CONFIG_DIR", "")
+        .current_dir(&cwd)
+        .args(["list", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let projects: Vec<Project> = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].root, Path::new("/from-home"));
+    let output = command(temp.path())
+        .env("HOME", "")
+        .arg("doctor")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("HOME is not set")
+    );
+}
+
+/// #13: saving through a symlink updates its target and keeps the mode.
+#[cfg(unix)]
+#[test]
+fn save_writes_through_symlink_and_keeps_mode() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let temp = tempfile::tempdir().unwrap();
+    let target = temp.path().join("dot/state.toml");
+    fs::create_dir(temp.path().join("dot")).unwrap();
+    fs::write(&target, "pins = ['/old']\n").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+    let link = temp.path().join("state.toml");
+    symlink(&target, &link).unwrap();
+    let state = State {
+        pins: vec!["/new".into()],
+        ..State::default()
+    };
+    state.save(&link).unwrap();
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(State::load(&target).unwrap().0, state);
+    assert_eq!(
+        fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+    assert_eq!(fs::read_dir(temp.path().join("dot")).unwrap().count(), 1);
+}
+
+/// #14: an inherited GIT_DIR must not redirect root resolution. The probe runs in a child
+/// process so the environment change cannot leak into the other git tests.
+#[test]
+fn project_roots_ignore_inherited_git_environment() {
+    let temp = tempfile::tempdir().unwrap();
+    let other = temp.path().join("other");
+    fs::create_dir(&other).unwrap();
+    git(&other, &["init", "-q"]);
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--ignored", "--exact", "git_environment_probe"])
+        .env("GIT_DIR", other.join(".git"))
+        .env("GIT_WORK_TREE", &other)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+#[ignore = "run by project_roots_ignore_inherited_git_environment with GIT_DIR set"]
+fn git_environment_probe() {
+    assert!(std::env::var_os("GIT_DIR").is_some(), "probe needs GIT_DIR");
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(repo.join("nested")).unwrap();
+    // The helper would inherit GIT_DIR too, so init this repo with it cleared.
+    let status = Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .args(["init", "-q"])
+        .current_dir(&repo)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let repo = repo.canonicalize().unwrap();
+    let mut roots = ProjectRoots::default();
+    assert_eq!(roots.resolve(&repo.join("nested")), repo);
+}
+
+/// #15: a config error names the file.
+#[test]
+fn config_errors_name_the_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let config_dir = temp.path().join("config");
+    fs::create_dir(&config_dir).unwrap();
+    fs::write(config_dir.join("config.toml"), "window_days = '7'\n").unwrap();
+    let output = command(temp.path()).arg("list").output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.starts_with("sboard: "));
+    assert!(stderr.contains("config.toml: "), "{stderr}");
+    assert!(stderr.contains("window_days"), "{stderr}");
+}
+
+/// #10: a full or closed stdout is a sentence or a quiet exit, never a panic.
+#[cfg(target_os = "linux")]
+#[test]
+fn closed_or_full_stdout_does_not_panic() {
+    use std::process::Stdio;
+    let temp = tempfile::tempdir().unwrap();
+    let full = fs::File::create("/dev/full").unwrap();
+    let output = command(temp.path())
+        .arg("version")
+        .stdout(Stdio::from(full))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.starts_with("sboard: "), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    let mut child = command(temp.path())
+        .args(["list", "--json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+}
+
+/// Sessions within a project are newest first, ties by id.
+#[test]
+fn scan_sorts_sessions_newest_first_then_by_id() {
+    let mut a = session("b", "/p");
+    a.last_activity_at = 300;
+    let mut b = session("a", "/p");
+    b.last_activity_at = 300;
+    let mut c = session("c", "/p");
+    c.last_activity_at = 500;
+    let registry: Registry = vec![Box::new(FakeSource {
+        agent: Agent::Codex,
+        sessions: vec![a, b, c],
+    })];
+    let result = scan::scan(&registry, &Config::default(), &State::default(), |cwd| {
+        cwd.to_owned()
+    });
+    let ids: Vec<&str> = result.projects[0]
+        .sessions
+        .iter()
+        .map(|s| s.id.as_str())
+        .collect();
+    assert_eq!(ids, ["c", "a", "b"]);
 }
