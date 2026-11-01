@@ -1,10 +1,26 @@
 # Fixtures
 
-M0 has no real sources or transcript status rules. The per-agent directories are
-empty placeholders; `list.json` is the golden output of an empty registry.
-M1 will add sanitized real transcripts for Claude Code and Codex and expand the
-golden file. Never copy raw session text or credentials into this directory.
+Claude Code and Codex record envelopes reduced from the live stores, with prompt
+and assistant prose, IDs, dates, tool input/output and paths replaced by short
+placeholders. Status/age/error variants replay those shapes at deterministic times.
+No raw prompt text, credentials, emails or paths outside `/home/user/...` belong here.
 
-`tests/harness.rs` supplies fake sources to exercise grouping and state without
-reading any live agent store. CLI tests set both SBOARD directory overrides to
-temporary directories; the production registry is empty until M1.
+`docs/sources/claude-code.md` and `docs/sources/codex.md` map every transcript to its
+rule. Each source includes a truncated last line and a tracked zero-byte file.
+The Codex title index and excluded guardian/subagent sessions are fixtures too.
+
+`tests/sources.rs` injects 2026-11-01 12:00 UTC into the sources and runs the same
+scan, filtering and list JSON writer as the CLI. `list.json` is the combined golden
+with relative transcript paths, independent of the checkout and current clock.
+Tests also use temporary stores for malformed bytes, normalization, tool results,
+large-file tail reads and CLI integration. Every CLI subprocess overrides both
+sboard directories and both agent homes; tests never read the owner's stores.
+
+`tests/round2.rs` builds deterministic temporary transcript fixtures for issues #21–#32,
+including exact-size records and sparse files over the fallback cap. Source pages map
+these regression names to the observed live failures.
+
+Round 3 cases in the same test file cover backward tail alignment with complete
+ignored records following the crossing message, ID cleanup, file project filters,
+ASCII-only timestamp fields, interruption prefixes, FIFO paths and cleaned title
+fallback. FIFO tests kill a blocked child after three seconds instead of hanging CI.

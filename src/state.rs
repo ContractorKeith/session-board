@@ -2,7 +2,7 @@ use crate::storage;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    fs, io,
+    io,
     path::{Path, PathBuf},
 };
 
@@ -25,7 +25,7 @@ impl State {
     /// (bad TOML, invalid UTF-8, a directory, no permission) is reported to the caller
     /// and treated as empty; state is never a reason for a command to fail (#11).
     pub fn load(path: &Path) -> io::Result<(Self, Vec<String>)> {
-        let text = match fs::read_to_string(path) {
+        let text = match storage::read_text(path) {
             Ok(text) => text,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Ok((Self::default(), vec![]));

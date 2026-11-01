@@ -1,3 +1,5 @@
+mod common;
+use common::git;
 use session_board::{
     config::Config,
     model::{Agent, Project, Session, Status},
@@ -40,6 +42,7 @@ impl Source for FakeSource {
             skipped_lines: 2,
             skipped_stores: 1,
             warnings: vec!["fixture warning".into()],
+            ..SourceScan::default()
         }
     }
 }
@@ -219,35 +222,6 @@ fn config_every_key_optional_and_unknown_keys_warn() {
     assert!(Config::load(&path).is_err());
 }
 
-/// Hermetic git: no inherited GIT_DIR (a hook running `cargo test` would otherwise commit
-/// into the developer's repo) and no global config (gpgsign, hooks path, identity).
-fn git(directory: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .env_remove("GIT_COMMON_DIR")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "test@example.com")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@example.com")
-        .args(args)
-        .current_dir(directory)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .unwrap()
-        .trim_end_matches('\n')
-        .into()
-}
-
 #[test]
 fn project_roots_git_nested_worktree_missing_and_cached() {
     let temp = tempfile::tempdir().unwrap();
@@ -291,20 +265,30 @@ fn project_roots_git_nested_worktree_missing_and_cached() {
     assert_eq!(roots.resolve(&nested), Path::new(&expected));
     let missing = temp.path().join("missing");
     assert_eq!(roots.resolve(&missing), missing);
-    assert_eq!(roots.resolve(temp.path()), temp.path());
+    let canonical = fs::canonicalize(temp.path()).unwrap();
+    assert_eq!(roots.resolve(temp.path()), canonical);
+    #[cfg(unix)]
+    {
+        // macOS temp roots have a symlinked prefix; exercise that case on Linux too.
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(temp.path(), &alias).unwrap();
+        assert_eq!(roots.resolve(&alias), canonical);
+    }
 }
 
 /// All subprocesses receive both overrides, never touching the owner's sboard files.
 fn command(temp: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_sboard"));
     command
+        .env("CLAUDE_CONFIG_DIR", temp.join(".claude"))
+        .env("CODEX_HOME", temp.join(".codex"))
         .env("SBOARD_STATE_DIR", temp.join("state"))
         .env("SBOARD_CONFIG_DIR", temp.join("config"));
     command
 }
 
 #[test]
-fn empty_fixture_list_matches_golden_and_cli_contract() {
+fn empty_stores_list_and_cli_contract() {
     let temp = tempfile::tempdir().unwrap();
     let fixture_dir = temp.path().join("fixtures");
     fs::create_dir(&fixture_dir).unwrap();
@@ -313,12 +297,9 @@ fn empty_fixture_list_matches_golden_and_cli_contract() {
         .args(["list", "--json"])
         .output()
         .unwrap();
-    assert!(output.status.success());
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        include_str!("../fixtures/list.json")
-    );
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "[]\n");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no enabled stores found"));
     let output = command(temp.path()).arg("version").output().unwrap();
     assert!(output.status.success());
     assert_eq!(
@@ -351,7 +332,7 @@ fn cli_uses_directory_overrides_and_reports_warnings() {
         .args(["list", "--json"])
         .output()
         .unwrap();
-    assert!(output.status.success());
+    assert_eq!(output.status.code(), Some(2));
     let projects: Vec<Project> = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[0].root, Path::new("/extra"));
@@ -361,7 +342,7 @@ fn cli_uses_directory_overrides_and_reports_warnings() {
 }
 
 #[test]
-fn doctor_reports_known_paths_without_reading_stores() {
+fn doctor_reports_known_paths_and_missing_stores() {
     let temp = tempfile::tempdir().unwrap();
     fs::create_dir_all(temp.path().join(".claude/projects")).unwrap();
     let output = command(temp.path())
@@ -428,13 +409,15 @@ fn empty_overrides_count_as_unset() {
     fs::write(cwd.join("config.toml"), "roots = ['/from-cwd']\n").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_sboard"))
         .env("HOME", &home)
+        .env("CLAUDE_CONFIG_DIR", "")
+        .env("CODEX_HOME", "")
         .env("SBOARD_STATE_DIR", "")
         .env("SBOARD_CONFIG_DIR", "")
         .current_dir(&cwd)
         .args(["list", "--json"])
         .output()
         .unwrap();
-    assert!(output.status.success());
+    assert_eq!(output.status.code(), Some(2));
     let projects: Vec<Project> = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[0].root, Path::new("/from-home"));
@@ -510,15 +493,7 @@ fn git_environment_probe() {
     let temp = tempfile::tempdir().unwrap();
     let repo = temp.path().join("repo");
     fs::create_dir_all(repo.join("nested")).unwrap();
-    // The helper would inherit GIT_DIR too, so init this repo with it cleared.
-    let status = Command::new("git")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .args(["init", "-q"])
-        .current_dir(&repo)
-        .status()
-        .unwrap();
-    assert!(status.success());
+    git(&repo, &["init", "-q"]);
     let repo = repo.canonicalize().unwrap();
     let mut roots = ProjectRoots::default();
     assert_eq!(roots.resolve(&repo.join("nested")), repo);
@@ -564,7 +539,10 @@ fn closed_or_full_stdout_does_not_panic() {
     drop(child.stdout.take());
     let output = child.wait_with_output().unwrap();
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert!(output.stderr.is_empty(), "{output:?}");
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("panicked"),
+        "{output:?}"
+    );
 }
 
 /// Sessions within a project are newest first, ties by id.
@@ -589,4 +567,37 @@ fn scan_sorts_sessions_newest_first_then_by_id() {
         .map(|s| s.id.as_str())
         .collect();
     assert_eq!(ids, ["c", "a", "b"]);
+}
+
+/// A symlinked config or state file (dotfiles-managed) loads through the link.
+#[cfg(unix)]
+#[test]
+fn symlinked_config_and_state_files_load() {
+    use std::os::unix::fs::symlink;
+    let temp = tempfile::tempdir().unwrap();
+    let real = temp.path().join("real");
+    let config_dir = temp.path().join("config");
+    let state_dir = temp.path().join("state");
+    fs::create_dir_all(&real).unwrap();
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::create_dir_all(&state_dir).unwrap();
+    // An empty but present store keeps the exit code at 0 (exit 2 means no stores found).
+    fs::create_dir_all(temp.path().join(".claude/projects")).unwrap();
+    fs::write(real.join("config.toml"), "roots = ['/from-link']\n").unwrap();
+    fs::write(real.join("state.toml"), "pins = ['/from-link']\n").unwrap();
+    symlink(real.join("config.toml"), config_dir.join("config.toml")).unwrap();
+    symlink(real.join("state.toml"), state_dir.join("state.toml")).unwrap();
+    let output = command(temp.path())
+        .args(["list", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let projects: Vec<Project> = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].root, Path::new("/from-link"));
+    assert!(projects[0].pinned);
 }

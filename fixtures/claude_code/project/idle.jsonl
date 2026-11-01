@@ -1,0 +1,2 @@
+{"parentUuid":null,"isSidechain":false,"type":"user","uuid":"placeholder","timestamp":"2026-11-01T10:59:00Z","cwd":"/home/user/project","sessionId":"idle","version":"placeholder","gitBranch":"main","message":{"role":"user","content":"User placeholder"}}
+{"parentUuid":null,"isSidechain":false,"type":"assistant","uuid":"placeholder","timestamp":"2026-11-01T10:59:00Z","cwd":"/home/user/project","sessionId":"idle","version":"placeholder","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"Assistant placeholder"}],"stop_reason":"end_turn"}}

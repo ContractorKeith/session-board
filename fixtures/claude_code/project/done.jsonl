@@ -1,0 +1,5 @@
+{"parentUuid":null,"isSidechain":false,"type":"user","uuid":"placeholder","timestamp":"2026-11-01T11:59:00Z","cwd":"/home/user/project","sessionId":"done","version":"placeholder","gitBranch":"main","message":{"role":"user","content":"User placeholder"}}
+{"parentUuid":null,"isSidechain":false,"type":"assistant","uuid":"placeholder","timestamp":"2026-11-01T11:59:00Z","cwd":"/home/user/project","sessionId":"done","version":"placeholder","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"Assistant placeholder"}],"stop_reason":"end_turn"}}
+{"type":"ai-title","aiTitle":"Title placeholder","sessionId":"done"}
+{"parentUuid":null,"isSidechain":true,"type":"assistant","uuid":"placeholder","timestamp":"2026-11-01T11:59:00Z","cwd":"/home/user/project","sessionId":"done","version":"placeholder","gitBranch":"main","message":{"role":"assistant","content":[{"type":"tool_use","id":"sidechain"}],"stop_reason":"tool_use"}}
+{"type":"queue-operation","timestamp":"2026-11-01T12:00:00Z","content":"Ignored placeholder"}

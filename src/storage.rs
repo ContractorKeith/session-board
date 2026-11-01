@@ -28,6 +28,21 @@ pub(crate) fn at(path: &Path, error: impl std::fmt::Display) -> io::Error {
     io::Error::other(format!("{}: {error}", path.display()))
 }
 
+/// Reject FIFOs, devices and directories before opening optional text paths. Follows
+/// symlinks on purpose: dotfiles-managed config and state files are links (#13).
+pub(crate) fn regular_file(path: &Path) -> io::Result<()> {
+    if fs::metadata(path)?.file_type().is_file() {
+        Ok(())
+    } else {
+        Err(io::Error::other("not a regular file"))
+    }
+}
+
+pub(crate) fn read_text(path: &Path) -> io::Result<String> {
+    regular_file(path)?;
+    fs::read_to_string(path)
+}
+
 /// Persist beside the target so rename stays on the same filesystem. A symlinked target is
 /// written through to its destination and the existing mode is kept (#13).
 pub(crate) fn write_toml(path: &Path, value: &impl Serialize) -> io::Result<()> {

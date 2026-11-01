@@ -1,0 +1,2 @@
+{"parentUuid":null,"isSidechain":false,"type":"user","uuid":"placeholder","timestamp":"2026-11-01T11:59:00Z","cwd":"/home/user/project","sessionId":"error","version":"placeholder","gitBranch":"main","message":{"role":"user","content":"User placeholder"}}
+{"parentUuid":null,"isSidechain":false,"type":"assistant","uuid":"placeholder","timestamp":"2026-11-01T11:59:00Z","cwd":"/home/user/project","sessionId":"error","version":"placeholder","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"Error placeholder"}]},"isApiErrorMessage":true}
