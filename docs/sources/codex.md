@@ -1,68 +1,76 @@
 # Codex source
 
-Store: `${CODEX_HOME:-~/.codex}/sessions/**/rollout-*.jsonl`.
-Titles: `${CODEX_HOME:-~/.codex}/session_index.jsonl` (`id`, `thread_name`,
-`updated_at`); last index entry for an ID wins, matching the append-only store.
-Empty overrides fall back to HOME. Everything is opened read-only.
+Store: `${CODEX_HOME:-~/.codex}/sessions/**/rollout-*.jsonl`; title index:
+`${CODEX_HOME:-~/.codex}/session_index.jsonl`. Empty overrides fall back to HOME.
+Everything is opened read-only; directory symlinks below the store are not traversed.
 
-Read session_meta identity/cwd and require `thread_source == "user"`.
-Drop subagent objects, subagent/guardian strings and missing provenance. Read
-turn_context cwd, event_msg task_started/task_complete/item_completed UserMessage,
-response_item user/assistant message text, custom_tool_call/output and
-function_call/output, plus explicit event_msg error. Ignore developer messages,
-reasoning, token_count, token_usage_record, thread_settings_applied, world_state,
-additional_tools and unknown records. Tool output is inspected structurally for
-nonzero `Process exited with code N` lines, never included as assistant text.
-Titles fall back to the first user text cut to 60 Unicode characters.
+Only the **first session_meta** supplies identity, provenance and cwd. Keep explicit
+`thread_source: "user"`, or absent thread_source with a string source (cli, vscode,
+exec). Reject object sources and every explicit non-user thread_source. Later metas
+are ignored, including a parent's meta embedded in a subagent rollout. App-server
+sessions omit thread_source; this is current live data, not an older format to drop.
+Turn_context cwd changes never move the session. Empty/relative first cwds skip with
+a count. IDs are `codex:<native-id>`; resume hints use the native ID. Project identity
+uses shared path normalization; worktrees remain separate projects.
 
-At most 64 KiB of head and 64 KiB of tail are read; metadata and first prompt come
-from the head, tail records update activity, cwd, text and status. Complete malformed
-or invalid-UTF-8 sampled lines and a truncated final line increment skipped lines;
-partial lines at seek boundaries do not. Empty/unreadable/missing-metadata files,
-invalid cwds and excluded non-user sessions increment skipped sessions. Corruption
-in the omitted middle is not counted. Missing/unreadable stores increment skipped
-stores; malformed title-index lines increment skipped lines too. Doctor scans all
-ages and reports stale-task/tool reasons. No directory symlinks are traversed.
+Read event_msg task_started, task_complete, turn_aborted, error, user_message and
+item_completed; response_item user/assistant message and tool call/output records.
+Ignore developer messages, reasoning, token_count, token_usage_record,
+thread_settings_applied, world_state, additional_tools and unknown types.
+Tool output exit codes are not API errors.
 
-IDs are `codex:<native-id>`; resume hints retain the native ID. Empty/relative cwds
-skip the session; absolute cwds use the same normalizer as project roots, pins and
-tags. Existing paths canonicalize; missing paths resolve `..` and separators.
-Config paths additionally expand a leading `~`. Worktrees remain separate projects.
+Titles prefer session_index thread_name (last index entry wins), then the first
+user_message or item_completed UserMessage, then the first user response_item whose
+text does not start with `<` or `#`. Last user text uses the same precedence with
+the latest eligible text. Fallback titles are cut to 60 Unicode characters. Titles
+collapse whitespace and remove controls and escape commands before reaching text
+output; last user/assistant text retains transcript prose for the future detail pane.
 
-PLAN §6 precedence: outstanding task_started or unanswered tool calls mean working
-below 600 seconds, error at/after 600 seconds. task_complete clears outstanding
-calls and supplies the ended text (last_agent_message, falling back to assistant
-text). A trailing `?`, `<question>` or `<request_user_input>` marker means waiting.
-Other completed tasks are done below 3600 seconds, otherwise idle. Explicit error
-records/nonzero exit output yield error only after those rules. Other tails are
-idle. Both thresholds are named constants in `src/status.rs`. Status evidence from the
-head is reset across an omitted middle: a completion could be in that gap. A long
-running task with its start outside the tail may therefore appear idle between
-tool calls; the bounded tail cannot establish that missing history.
+Read 256 KiB of head and 64 KiB of tail, retaining complete lines at aligned seams.
+If the tail contains no complete record, read from the end of the complete head to
+EOF, capped at 64 MiB; larger fallbacks skip the session with a count and reason.
+Sampled malformed/truncated/invalid-UTF-8 records increment skipped lines; seam
+fragments do not. Missing/unreadable stores increment skipped stores. Empty files,
+invalid cwds, excluded provenance and unreadable transcripts increment skipped
+sessions. Corruption in an omitted middle is not counted. Malformed title-index
+records increment skipped lines. Doctor scans all ages; list applies its window.
 
-Fixtures are reduced live transcript envelopes with placeholders and normalized
-IDs, dates and paths; deterministic status/age/error replays use a fixed test time
-of 2026-11-01 12:00 UTC. Under `fixtures/codex/sessions/2026/11/01/`:
+A head task_started survives the gap until a tail task event overrides it. Pending
+tasks or unanswered calls mean working below 1800 seconds, error at/after 1800.
+Task_complete clears calls and supplies ended text. Turn_aborted clears calls and
+is idle, or an ended turn when last_agent_message is present. A completed turn
+ending in `?` or containing `<question>` / `<request_user_input>` is waiting; other
+ended turns are done below 3600 seconds, else idle. An event_msg error is an API
+error; the next task_started clears it. Error events terminate the pending task.
+The first-match derivation and thresholds live in `src/status.rs`. Stale-call
+reasons appear only in doctor, never as list warnings.
+
+Base fixtures under `fixtures/codex/sessions/2026/11/01/`, fixed clock 12:00 UTC:
 
 | Fixture | Rule / behavior |
 |---|---|
-| rollout-working.jsonl | 1: task_started without completion, 1 minute old |
-| rollout-stuck.jsonl | 2: task_started without completion, 11 minutes old |
-| rollout-waiting.jsonl | 3: task_complete ends in a question |
-| rollout-done.jsonl | 4: recent completion; title from session_index.jsonl |
+| rollout-working.jsonl | 1: pending task, 1 minute old |
+| rollout-stuck.jsonl | 2: pending task, 40 minutes old; doctor reason |
+| rollout-waiting.jsonl | 3: completed question |
+| rollout-done.jsonl | 4: recent completion, indexed title |
 | rollout-idle.jsonl | 4: completion 61 minutes old |
-| rollout-error.jsonl | 5: nonzero tool exit |
-| rollout-malformed.jsonl | Valid metadata/user followed by truncated JSON |
-| rollout-empty.jsonl | Zero-byte transcript, skipped session |
-| rollout-guardian.jsonl | Guardian excluded |
+| rollout-error.jsonl | 5: event_msg API error |
+| rollout-malformed.jsonl | Truncated final JSON after valid records |
+| rollout-empty.jsonl | Zero-byte transcript |
+| rollout-guardian.jsonl | Explicit guardian excluded |
 | rollout-subagent.jsonl | Subagent object excluded |
 
-`fixtures/codex/session_index.jsonl` covers title lookup. The combined golden
-`fixtures/list.json` uses the fixed clock and the same JSON writer as `list`.
+`fixtures/codex/session_index.jsonl` covers lookup; `fixtures/list.json` is the
+combined fixed-clock golden. `tests/round2.rs` creates bounded temporary fixtures:
+issue21 covers absent provenance/string and object sources and embedded metas;
+issue22 covers a 70 KB first meta, an omitted middle, pending/complete/aborted task
+state at 20 seconds and 40 minutes; issue25 covers API error, recovery and nonzero
+tool exits; issue27 covers aborts with/without text; issue28 covers event/index
+priority, injected instructions, the 256 KiB head and sanitized titles; issue32
+covers cwd changes. The same tests exercise the public Source interface.
 
-Live inspection (Omarchy, 2026-11-01) found 44 older rollouts with `source: vscode`
-and no thread_source, alongside 12 explicitly user-owned rollouts and five explicit
-non-user rollouts. The older records are intentionally excluded under the strict
-user-only rule; no inferred ownership fallback was added. The question heuristic
-remains unverified against owner intent; there is no confirmed misclassification
-from structural inspection alone. This does not establish live process liveness.
+Round 2 live review confirmed that strict thread_source filtering hid this week's
+sessions and resetting task state made active/stuck tasks idle. Those bugs are
+fixed. The 30-minute threshold is the agreed calibration for long tools/subagents;
+transcripts still cannot prove process liveness. The waiting heuristic remains as
+specified, with no prior-turn text reused for completion.

@@ -141,9 +141,9 @@ Status    working | waiting | idle | error | done
 Status from the transcript tail, first match wins:
 
 1. Last meaningful line is an assistant turn that ends in a tool call with no result yet, or a
-   `task_started` without `task_complete` (Codex), and `last_activity_at` is under 10 minutes
+   `task_started` without `task_complete` (Codex), and `last_activity_at` is under 30 minutes
    old: **working**.
-2. Same shape but older than 10 minutes: **error** (an agent that stopped mid-tool is stuck or
+2. Same shape but older than 30 minutes: **error** (an agent that stopped mid-tool is stuck or
    died). `doctor` names the reason.
 3. Last line is an assistant text turn with `stop_reason: end_turn` (Claude) or a
    `task_complete` (Codex) whose text ends in a question or an ask for a decision: **waiting**.

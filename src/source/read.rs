@@ -7,7 +7,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const CHUNK: u64 = 64 * 1024;
+const HEAD_BYTES: u64 = 256 * 1024;
+const TAIL_BYTES: u64 = 64 * 1024;
+const FALLBACK_BYTES: u64 = 64 * 1024 * 1024;
 pub fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -15,49 +17,73 @@ pub fn now() -> i64 {
         .as_secs() as i64
 }
 
-/// Read complete head lines and the tail, never a whole large transcript. The seam's
-/// partial lines are omitted, not counted as malformed agent records.
+/// Sample complete head/tail records. An oversized final record gets a bounded
+/// contiguous fallback so recent activity never silently falls back to old metadata.
 pub fn records(path: &Path, result: &mut SourceScan) -> io::Result<(Vec<Value>, Option<usize>)> {
     let mut file = File::open(path)?;
     let size = file.metadata()?.len();
     let mut head = Vec::new();
-    (&mut file).take(CHUNK).read_to_end(&mut head)?;
-    let mut segments = vec![];
-    let mut gap = false;
-    if size > CHUNK {
-        let end = head.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
-        head.truncate(end);
-        segments.push(head);
-        let start = (size.saturating_sub(CHUNK)).max(end as u64);
-        file.seek(SeekFrom::Start(start))?;
-        let mut tail = Vec::new();
-        (&mut file).take(CHUNK).read_to_end(&mut tail)?;
-        if start > end as u64 {
-            gap = true;
-            if let Some(i) = tail.iter().position(|b| *b == b'\n') {
-                tail.drain(..=i);
-            } else {
-                tail.clear();
-            }
-        }
-        segments.push(tail);
+    (&mut file)
+        .take(size.min(HEAD_BYTES))
+        .read_to_end(&mut head)?;
+    if size <= HEAD_BYTES {
+        return Ok((parse(&head, result), None));
+    }
+    let end = head.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    head.truncate(end);
+    let mut records = parse(&head, result);
+    let start = size.saturating_sub(TAIL_BYTES).max(end as u64);
+    let gap = start > end as u64;
+    let mut aligned = true;
+    if gap {
+        file.seek(SeekFrom::Start(start - 1))?;
+        let mut previous = [0];
+        file.read_exact(&mut previous)?;
+        aligned = previous[0] == b'\n';
     } else {
-        segments.push(head);
+        file.seek(SeekFrom::Start(start))?;
     }
-    let mut records = vec![];
-    let mut boundary = None;
-    for (index, bytes) in segments.iter().enumerate() {
-        if gap && index == 1 {
-            boundary = Some(records.len());
-        }
-        for line in bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
-            match serde_json::from_slice::<Value>(line) {
-                Ok(value) if value.is_object() => records.push(value),
-                _ => result.skipped_lines += 1,
-            }
-        }
+    let mut tail = Vec::new();
+    (&mut file).take(size - start).read_to_end(&mut tail)?;
+    if !aligned {
+        let cut = tail
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(tail.len(), |i| i + 1);
+        tail.drain(..cut);
     }
+    let mut sampled = SourceScan::default();
+    let tail_records = parse(&tail, &mut sampled);
+    if tail_records.is_empty() {
+        if size - end as u64 > FALLBACK_BYTES {
+            return Err(io::Error::other(
+                "no complete tail record; fallback exceeds 64 MiB",
+            ));
+        }
+        file.seek(SeekFrom::Start(end as u64))?;
+        tail.clear();
+        (&mut file).take(size - end as u64).read_to_end(&mut tail)?;
+        records.extend(parse(&tail, result));
+        return Ok((records, None));
+    }
+    result.skipped_lines += sampled.skipped_lines;
+    let boundary = gap.then_some(records.len());
+    records.extend(tail_records);
     Ok((records, boundary))
+}
+
+fn parse(bytes: &[u8], result: &mut SourceScan) -> Vec<Value> {
+    bytes
+        .split(|b| *b == b'\n')
+        .filter(|l| !l.is_empty())
+        .filter_map(|line| match serde_json::from_slice::<Value>(line) {
+            Ok(value) if value.is_object() => Some(value),
+            _ => {
+                result.skipped_lines += 1;
+                None
+            }
+        })
+        .collect()
 }
 
 /// Never follow directory symlinks while walking a store (cycles and subagent trees).
@@ -122,6 +148,45 @@ pub fn text(content: &Value) -> String {
 }
 pub fn string(value: &Value, key: &str) -> String {
     value[key].as_str().unwrap_or_default().to_owned()
+}
+
+/// Keep titles to one printable line. Strip CSI commands and OSC wrappers;
+/// retain OSC payload text after the numeric command (never execute it).
+pub fn title(text: &str) -> String {
+    let mut chars = text.chars().peekable();
+    let mut clean = String::new();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            match chars.peek() {
+                Some('[') => {
+                    chars.next();
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    chars.next();
+                    while chars.peek().is_some_and(|c| c.is_ascii_digit()) {
+                        chars.next();
+                    }
+                    if chars.peek() == Some(&';') {
+                        chars.next();
+                    }
+                }
+                Some('\\') => {
+                    chars.next();
+                }
+                _ => (),
+            }
+        } else if c.is_whitespace() {
+            clean.push(' ');
+        } else if !c.is_control() {
+            clean.push(c);
+        }
+    }
+    clean.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// RFC3339 timestamps in the stores; UTC and numeric offsets, fractional seconds ignored.

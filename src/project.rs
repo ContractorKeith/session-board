@@ -105,7 +105,18 @@ pub fn normalize_settings(
     config: &mut crate::config::Config,
     state: &mut crate::state::State,
     home: &Path,
-) {
+) -> Vec<String> {
+    let warnings = config
+        .roots
+        .iter()
+        .filter(|p| normalize(p, Some(home)).is_none())
+        .map(|p| {
+            format!(
+                "invalid config root ignored: {} (expected an absolute path or leading ~/)",
+                p.display()
+            )
+        })
+        .collect();
     config.roots = config
         .roots
         .iter()
@@ -134,4 +145,5 @@ pub fn normalize_settings(
             *entry = path.to_string_lossy().into_owned();
         }
     }
+    warnings
 }

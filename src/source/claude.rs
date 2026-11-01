@@ -5,10 +5,7 @@ use crate::{
     project::normalize,
     status::{self, Tail},
 };
-use std::{
-    collections::HashSet,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 pub struct Claude {
     pub root: PathBuf,
@@ -39,7 +36,7 @@ fn session(path: &Path, now: i64, result: &mut SourceScan) -> Option<Session> {
         .map_err(|e| result.warnings.push(format!("{}: {e}", path.display())))
         .ok()?;
     let mut id = String::new();
-    let mut cwd = PathBuf::new();
+    let mut cwd = None;
     let mut title = String::new();
     let mut first_user = None;
     let mut user = String::new();
@@ -47,12 +44,10 @@ fn session(path: &Path, now: i64, result: &mut SourceScan) -> Option<Session> {
     let mut started = None;
     let mut last = None;
     let mut tail = Tail::default();
-    let mut calls = HashSet::new();
     for (index, v) in records.into_iter().enumerate() {
         // The omitted middle may contain completions; head status is not tail evidence.
         if boundary == Some(index) {
             tail = Tail::default();
-            calls.clear();
         }
 
         if v["isSidechain"] == true {
@@ -74,16 +69,21 @@ fn session(path: &Path, now: i64, result: &mut SourceScan) -> Option<Session> {
             result.skipped_lines += 1;
             continue;
         };
-        if let Some(value) = v["sessionId"].as_str() {
-            id = value.to_owned();
+        if id.is_empty() {
+            id = read::string(&v, "sessionId");
         }
-        if let Some(value) = v["cwd"].as_str() {
-            cwd = value.into();
+        if cwd.is_none() {
+            cwd = v["cwd"].as_str().map(PathBuf::from);
+        }
+        if v["isMeta"] == true {
+            continue;
         }
         started.get_or_insert(time);
         last = Some(time);
         let message = &v["message"];
         let text = read::text(&message["content"]);
+        tail.explicit_error =
+            v["isApiErrorMessage"] == true || v.get("error").is_some_and(|e| !e.is_null());
         let tool = message["content"]
             .as_array()
             .is_some_and(|parts| parts.iter().any(|p| p["type"] == "tool_use"));
@@ -94,40 +94,24 @@ fn session(path: &Path, now: i64, result: &mut SourceScan) -> Option<Session> {
             if !text.is_empty() {
                 assistant = text.clone();
             }
-            if let Some(parts) = message["content"].as_array() {
-                for part in parts.iter().filter(|p| p["type"] == "tool_use") {
-                    calls.insert(read::string(part, "id"));
-                }
-            }
             tail.pending = tool || message["stop_reason"] == "tool_use";
-            tail.ended = !tail.pending && message["stop_reason"] == "end_turn";
-            tail.text = if text.is_empty() {
-                assistant.clone()
-            } else {
-                text
-            };
-            tail.explicit_error |=
-                v["isApiErrorMessage"] == true || v.get("error").is_some_and(|e| !e.is_null());
+            tail.ended = !tail.pending
+                && matches!(
+                    message["stop_reason"].as_str(),
+                    Some("end_turn" | "max_tokens" | "stop_sequence")
+                );
+            tail.text = text;
         } else {
-            if !tool_result && !text.is_empty() {
+            if !tool_result && !text.is_empty() && !text.starts_with('<') {
                 first_user.get_or_insert_with(|| text.clone());
-                user = text;
+                user = text.clone();
             }
-            if let Some(parts) = message["content"].as_array() {
-                for part in parts.iter().filter(|p| p["type"] == "tool_result") {
-                    calls.remove(&read::string(part, "tool_use_id"));
-                }
-            }
-            if !tool_result {
-                calls.clear();
-            }
-            tail.pending = !calls.is_empty();
+            tail.pending = !text.contains("[Request interrupted by user");
             tail.ended = false;
-            tail.explicit_error |= message["content"]
-                .as_array()
-                .is_some_and(|parts| parts.iter().any(|p| p["is_error"] == true));
+            tail.text.clear();
         }
     }
+    let cwd = cwd?;
     if id.is_empty() || !cwd.is_absolute() {
         return None;
     }
@@ -138,8 +122,8 @@ fn session(path: &Path, now: i64, result: &mut SourceScan) -> Option<Session> {
     }
     let status = status::derive(&tail, last, now);
     if tail.pending && status == crate::model::Status::Error {
-        result.warnings.push(format!(
-            "claude_code:{id}: pending tool call older than 10 minutes"
+        result.status_reasons.push(format!(
+            "claude_code:{id}: pending generation or tool call at least 30 minutes old"
         ));
     }
     Some(Session {
@@ -147,7 +131,7 @@ fn session(path: &Path, now: i64, result: &mut SourceScan) -> Option<Session> {
         agent: Agent::ClaudeCode,
         project_root: cwd.clone(),
         cwd,
-        title,
+        title: read::title(&title),
         started_at: started?,
         last_activity_at: last,
         status,

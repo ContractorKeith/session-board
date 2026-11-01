@@ -14,6 +14,7 @@ pub struct SourceScan {
     pub skipped_stores: usize,
     pub skipped_sessions: usize,
     pub warnings: Vec<String>,
+    pub status_reasons: Vec<String>,
 }
 
 pub trait Source {

@@ -75,38 +75,41 @@ fn session(
     let (records, boundary) = read::records(path, result)
         .map_err(|e| result.warnings.push(format!("{}: {e}", path.display())))
         .ok()?;
-    let mut id = String::new();
-    let mut cwd = PathBuf::new();
-    let mut first_user = None;
-    let mut user = String::new();
+    let mut identity = None;
+    let mut first_event_user = None;
+    let mut last_event_user = None;
+    let mut first_fallback_user = None;
+    let mut last_fallback_user = None;
     let mut assistant = String::new();
+    let mut turn_text = String::new();
     let mut started = None;
     let mut last = None;
     let mut tail = Tail::default();
     let mut task_active = false;
     let mut calls = HashSet::new();
     for (index, v) in records.into_iter().enumerate() {
-        // The omitted middle may contain completions; head status is not tail evidence.
         if boundary == Some(index) {
-            tail = Tail::default();
+            // Task lifecycle survives omitted history; tail task events override it.
+            tail = Tail {
+                pending: task_active,
+                ..Default::default()
+            };
             calls.clear();
-            task_active = false;
         }
-
         let p = &v["payload"];
         let kind = v["type"].as_str().unwrap_or_default();
         if kind == "session_meta" {
-            if p["thread_source"] != "user" {
+            if identity.is_some() {
+                continue;
+            }
+            let owner = match p.get("thread_source") {
+                Some(source) => source == "user",
+                None => p["source"].is_string(),
+            };
+            if !owner || p["source"].is_object() {
                 return None;
             }
-            id = read::string(p, "id");
-            cwd = read::string(p, "cwd").into();
-        }
-        if kind == "turn_context" {
-            if let Some(value) = p["cwd"].as_str() {
-                cwd = value.into();
-            }
-            continue;
+            identity = Some((read::string(p, "id"), PathBuf::from(read::string(p, "cwd"))));
         }
         if kind == "response_item"
             && p["type"] == "message"
@@ -118,7 +121,14 @@ fn session(
             || (kind == "event_msg"
                 && matches!(
                     p["type"].as_str(),
-                    Some("task_started" | "task_complete" | "item_completed" | "error")
+                    Some(
+                        "task_started"
+                            | "task_complete"
+                            | "turn_aborted"
+                            | "item_completed"
+                            | "user_message"
+                            | "error"
+                    )
                 ))
             || (kind == "response_item"
                 && matches!(
@@ -143,42 +153,69 @@ fn session(
         match (kind, p["type"].as_str().unwrap_or_default()) {
             ("event_msg", "task_started") => {
                 task_active = true;
-                tail.pending = true;
-                tail.ended = false;
+                calls.clear();
+                turn_text.clear();
+                tail = Tail {
+                    pending: true,
+                    ..Default::default()
+                };
             }
-            ("event_msg", "task_complete") => {
+            ("event_msg", "task_complete" | "turn_aborted") => {
                 task_active = false;
                 calls.clear();
-                tail.pending = false;
-                tail.ended = true;
-                tail.text = p["last_agent_message"]
-                    .as_str()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or(&assistant)
-                    .to_owned();
-                if !tail.text.is_empty() {
-                    assistant = tail.text.clone();
+                let message = p["last_agent_message"].as_str().filter(|s| !s.is_empty());
+                let aborted = p["type"] == "turn_aborted";
+                let text = if aborted {
+                    message.unwrap_or_default()
+                } else {
+                    message.unwrap_or(&turn_text)
+                };
+                tail = Tail {
+                    ended: !aborted || message.is_some(),
+                    text: text.to_owned(),
+                    ..Default::default()
+                };
+                if !text.is_empty() {
+                    assistant = text.to_owned();
                 }
             }
-            ("event_msg", "error") => tail.explicit_error = true,
+            ("event_msg", "error") => {
+                task_active = false;
+                calls.clear();
+                tail = Tail {
+                    explicit_error: true,
+                    ..Default::default()
+                };
+            }
+            ("event_msg", "user_message") => {
+                let text = read::string(p, "message");
+                if !text.is_empty() {
+                    first_event_user.get_or_insert_with(|| text.clone());
+                    last_event_user = Some(text);
+                }
+            }
             ("event_msg", "item_completed") if p["item"]["type"] == "UserMessage" => {
-                user = p["item"]["text"]
+                let text = p["item"]["text"]
                     .as_str()
                     .map(str::to_owned)
                     .unwrap_or_else(|| read::text(&p["item"]["content"]));
-                if !user.is_empty() {
-                    first_user.get_or_insert_with(|| user.clone());
+                if !text.is_empty() {
+                    first_event_user.get_or_insert_with(|| text.clone());
+                    last_event_user = Some(text);
                 }
             }
             ("response_item", "message") => {
                 let text = read::text(&p["content"]);
                 match p["role"].as_str() {
-                    Some("user") => {
-                        first_user.get_or_insert_with(|| text.clone());
-                        user = text;
+                    Some("user")
+                        if !text.is_empty() && !text.trim_start().starts_with(['<', '#']) =>
+                    {
+                        first_fallback_user.get_or_insert_with(|| text.clone());
+                        last_fallback_user = Some(text);
                     }
                     Some("assistant") if !text.is_empty() => {
-                        assistant = text;
+                        assistant = text.clone();
+                        turn_text = text;
                     }
                     _ => (),
                 }
@@ -191,15 +228,11 @@ fn session(
             ("response_item", "custom_tool_call_output" | "function_call_output") => {
                 calls.remove(&read::string(p, "call_id"));
                 tail.pending = task_active || !calls.is_empty();
-                let output = read::string(p, "output");
-                tail.explicit_error |= output.lines().any(|l| {
-                    l.strip_prefix("Process exited with code ")
-                        .is_some_and(|c| c.trim().parse::<i32>().is_ok_and(|code| code != 0))
-                });
             }
             _ => (),
         }
     }
+    let (id, cwd) = identity?;
     if id.is_empty() || !cwd.is_absolute() {
         return None;
     }
@@ -207,23 +240,30 @@ fn session(
     let last = last?;
     let status = status::derive(&tail, last, now);
     if tail.pending && status == Status::Error {
-        result.warnings.push(format!(
-            "codex:{id}: pending task or tool call older than 10 minutes"
+        result.status_reasons.push(format!(
+            "codex:{id}: pending task or tool call at least 30 minutes old"
         ));
     }
+    let title = titles
+        .get(&id)
+        .filter(|s| !s.is_empty())
+        .map(|s| read::title(s))
+        .unwrap_or_else(|| {
+            read::title(&first_event_user.or(first_fallback_user).unwrap_or_default())
+                .chars()
+                .take(60)
+                .collect()
+        });
     Some(Session {
         id: format!("codex:{id}"),
         agent: Agent::Codex,
         project_root: cwd.clone(),
         cwd,
-        title: titles
-            .get(&id)
-            .cloned()
-            .unwrap_or_else(|| first_user.unwrap_or_default().chars().take(60).collect()),
+        title,
         started_at: started?,
         last_activity_at: last,
         status,
-        last_user_text: user,
+        last_user_text: last_event_user.or(last_fallback_user).unwrap_or_default(),
         last_assistant_text: assistant,
         transcript_path: path.into(),
         resume_hint: format!("codex resume {id}"),

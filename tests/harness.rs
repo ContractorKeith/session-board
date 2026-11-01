@@ -1,3 +1,5 @@
+mod common;
+use common::git;
 use session_board::{
     config::Config,
     model::{Agent, Project, Session, Status},
@@ -220,35 +222,6 @@ fn config_every_key_optional_and_unknown_keys_warn() {
     assert!(Config::load(&path).is_err());
 }
 
-/// Hermetic git: no inherited GIT_DIR (a hook running `cargo test` would otherwise commit
-/// into the developer's repo) and no global config (gpgsign, hooks path, identity).
-fn git(directory: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .env_remove("GIT_COMMON_DIR")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "test@example.com")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@example.com")
-        .args(args)
-        .current_dir(directory)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .unwrap()
-        .trim_end_matches('\n')
-        .into()
-}
-
 #[test]
 fn project_roots_git_nested_worktree_missing_and_cached() {
     let temp = tempfile::tempdir().unwrap();
@@ -326,7 +299,7 @@ fn empty_stores_list_and_cli_contract() {
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(String::from_utf8(output.stdout).unwrap(), "[]\n");
-    assert!(output.stderr.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no enabled stores found"));
     let output = command(temp.path()).arg("version").output().unwrap();
     assert!(output.status.success());
     assert_eq!(
@@ -520,15 +493,7 @@ fn git_environment_probe() {
     let temp = tempfile::tempdir().unwrap();
     let repo = temp.path().join("repo");
     fs::create_dir_all(repo.join("nested")).unwrap();
-    // The helper would inherit GIT_DIR too, so init this repo with it cleared.
-    let status = Command::new("git")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .args(["init", "-q"])
-        .current_dir(&repo)
-        .status()
-        .unwrap();
-    assert!(status.success());
+    git(&repo, &["init", "-q"]);
     let repo = repo.canonicalize().unwrap();
     let mut roots = ProjectRoots::default();
     assert_eq!(roots.resolve(&repo.join("nested")), repo);
@@ -574,7 +539,10 @@ fn closed_or_full_stdout_does_not_panic() {
     drop(child.stdout.take());
     let output = child.wait_with_output().unwrap();
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert!(output.stderr.is_empty(), "{output:?}");
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("panicked"),
+        "{output:?}"
+    );
 }
 
 /// Sessions within a project are newest first, ties by id.

@@ -11,14 +11,18 @@ use std::io::{self, Write};
 fn main() {
     let cli = Cli::try_parse().unwrap_or_else(|error| {
         let code = if error.use_stderr() { 1 } else { 0 };
-        let _ = error.print();
+        if error.use_stderr() {
+            cli::warn(&error.to_string());
+        } else {
+            let _ = error.print();
+        }
         std::process::exit(code);
     });
     match run(cli) {
         Ok(code) => std::process::exit(code),
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
         Err(error) => {
-            eprintln!("sboard: {error}");
+            cli::warn(&error.to_string());
             std::process::exit(1);
         }
     }
@@ -38,10 +42,25 @@ fn run(cli: Cli) -> io::Result<i32> {
             agent,
             all,
         }) => {
-            let (mut config, warnings) = Config::load(&Config::path()?)?;
+            if matches!(
+                agent,
+                Some(cli::AgentFilter::Grok | cli::AgentFilter::Opencode)
+            ) {
+                return Err(io::Error::other(
+                    "Grok and OpenCode sources are not implemented until M6; use claude_code or codex",
+                ));
+            }
+            let (mut config, mut warnings) = Config::load(&Config::path()?)?;
             let (mut state, state_warnings) = State::load(&State::path()?)?;
             let home = cli::home()?;
-            normalize_settings(&mut config, &mut state, &home);
+            warnings.extend(normalize_settings(&mut config, &mut state, &home));
+            let disabled = [
+                (!config.agents.claude_code, "claude_code"),
+                (!config.agents.codex, "codex"),
+            ]
+            .into_iter()
+            .filter_map(|(off, name)| off.then_some(name))
+            .collect::<Vec<_>>();
             if all {
                 config.window_days = u32::MAX;
             }
@@ -55,6 +74,16 @@ fn run(cli: Cli) -> io::Result<i32> {
                 || config.agents.codex && stores[1].exists)
             {
                 exit = 2;
+                cli::warn(&format!(
+                    "no enabled stores found; looked for claude_code at {} and codex at {}; disabled by config: {}",
+                    stores[0].path.display(),
+                    stores[1].path.display(),
+                    if disabled.is_empty() {
+                        "none".into()
+                    } else {
+                        disabled.join(", ")
+                    }
+                ));
             }
             let project = project
                 .map(|p| {
@@ -68,6 +97,7 @@ fn run(cli: Cli) -> io::Result<i32> {
                 })
                 .transpose()?;
             let mut roots = ProjectRoots::default();
+            let project = project.map(|p| roots.resolve(&p));
             let mut result = scan::scan(&source::registry(), &config, &state, |cwd| {
                 roots.resolve(cwd)
             });
@@ -84,7 +114,7 @@ fn run(cli: Cli) -> io::Result<i32> {
                 .chain(state_warnings)
                 .chain(result.warnings)
             {
-                eprintln!("sboard: {warning}");
+                cli::warn(&warning);
             }
             cli::list(&mut out, &result.projects, json)?;
         }

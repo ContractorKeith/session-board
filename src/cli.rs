@@ -144,6 +144,7 @@ pub fn doctor(out: &mut impl Write, home: &Path, json: bool) -> io::Result<()> {
         store.skipped_stores = result.skipped_stores;
         store.skipped_sessions = result.skipped_sessions;
         store.warnings = result.warnings;
+        store.warnings.extend(result.status_reasons);
     }
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&stores)?)?;
@@ -278,4 +279,9 @@ pub fn list(
         }
     }
     Ok(())
+}
+
+/// Diagnostics must not prevent successful stdout when stderr is closed or full.
+pub fn warn(message: &str) {
+    let _ = writeln!(io::stderr().lock(), "sboard: {message}");
 }

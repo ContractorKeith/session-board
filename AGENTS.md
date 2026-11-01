@@ -36,8 +36,8 @@ cargo run -- doctor
 - Sources are read-only and tolerant. Skip and count malformed lines; never panic on a store.
   Never write under `~/.claude`, `~/.codex`, `~/.grok` or any agent directory (ADR-0001).
 - Status comes from the transcript, not from pane scraping. tmux is for jump and launch only.
-- Codex stores contain subagent and guardian threads (`thread_source` is not `user`); drop
-  them. Claude stores contain `api-request*`, `attachment`, `queue-operation` and sidechain
+- Codex stores contain subagent and guardian sessions (object `source` or explicit non-user
+  `thread_source`); drop them. Missing `thread_source` with string `source` is an owner session. Claude stores contain `api-request*`, `attachment`, `queue-operation` and sidechain
   lines; skip them.
 - `model`, `status`, `state`, `scan` and `ui` do no I/O beyond the state and config files.
 - Fixtures are real transcripts with text replaced by placeholders. Every status rule has one.

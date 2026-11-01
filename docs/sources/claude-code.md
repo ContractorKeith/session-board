@@ -1,57 +1,69 @@
 # Claude Code source
 
-Store: `${CLAUDE_CONFIG_DIR:-~/.claude}/projects/*/*.jsonl`. Overrides name the
-config home, not `projects`; empty overrides fall back to HOME. Opened read-only.
-Only this level is scanned: nested subagent directories are not traversed.
+Store: `${CLAUDE_CONFIG_DIR:-~/.claude}/projects/*/*.jsonl`. The override names the
+config home; empty falls back to HOME. Files are read-only, and nested subagent
+paths are not traversed.
 
-Read `user`, `assistant`, `ai-title` (`aiTitle`, with `title` compatibility).
-Ignore every `isSidechain: true` record and all other types, including attachment,
-api-request*, queue-operation, atis-latch, last-prompt, pr-link, cost-state,
-mode, permission-mode and file-history records. Unknown types are ignored.
-Text may be a string or text blocks; thinking and tool payloads are not prose.
-The first user text, cut to 60 Unicode characters, is the fallback title.
+Read user, assistant and ai-title (aiTitle, with title compatibility). Ignore
+sidechains, isMeta lines and all other types, including attachment, api-request*,
+queue-operation, atis-latch, last-prompt, pr-link, cost-state, mode,
+permission-mode and file-history records. Text is a string or text blocks;
+thinking/tool blocks are not prose. User text starting with `<` does not become
+the title or last user text. First eligible prompt is the 60-character fallback
+title. All titles collapse whitespace and strip controls/escape commands into one
+printable line. Display detail text retains the original eligible prose.
 
-Read at most 64 KiB of head and 64 KiB of tail, with seek and without parsing the
-omitted middle. Head supplies identity, first prompt and start time; tail updates
-cwd, title, activity and status. Boundary fragments are discarded, not counted as
-malformed lines. A complete malformed/invalid-UTF-8 record or truncated final
-record in the sampled regions increments skipped lines. An empty, unreadable or
-metadata-less transcript increments skipped sessions. Counts describe sampled
-regions, not a whole-file validation. A missing/unreadable store increments
-skipped stores. Doctor scans all ages and includes stale-tool reasons.
+The first message cwd is the launch directory; later changes are ignored. Empty
+or relative cwds skip the session with a count. Shared normalization canonicalizes
+existing paths and resolves `..`/separators otherwise; project resolution maps
+cwds inside `.git` to the project. IDs are `claude_code:<native-id>`; resume hints
+retain native IDs, avoiding cross-agent read-mark collisions.
 
-Session IDs are `claude_code:<native-id>`, preventing read-mark collisions with
-other agents. Resume hints retain the native ID. Empty/relative cwds skip the
-session; absolute cwds share project normalization (canonicalize existing paths,
-otherwise resolve `..` and trailing separators). Git roots are resolved outside
-the source; a cwd inside `.git` resolves to the containing project.
+Read 256 KiB of head and 64 KiB of tail. Complete head lines supply metadata and
+first prompt; tail records supply current activity/status. A tail starting on a
+line boundary retains its first line. If no complete tail record is available,
+read from the end of the complete head through EOF, capped at 64 MiB. Beyond that,
+skip and count the session with a reason. Sampled malformed/truncated/invalid-UTF-8
+records count as skipped lines; seam fragments do not. Empty/unreadable or invalid
+sessions increment skipped sessions. Missing/unreadable stores increment skipped
+stores. Omitted middle records are not validated. Doctor scans all ages and gives
+stale-call reasons; list applies its configured window and never emits those reasons.
 
-Status follows PLAN §6 in order. Pending tool_use blocks (matched to tool_result
-IDs), or a `tool_use` stop reason without a result, are working below 600 seconds
-and error at/after 600 seconds. An ended assistant turn is waiting when its text
-ends in `?` or contains `<question>` / `<request_user_input>` markers. Other
-ended turns are done below 3600 seconds and idle at/after 3600 seconds. Explicit
-`isApiErrorMessage`, non-null error, or tool_result `is_error` records yield error
-only after those higher-priority rules. Unended, nonpending tails default to idle.
-Threshold constants live only in `src/status.rs`.
+PLAN §6 first-match rules, thresholds in `src/status.rs`:
 
-Fixtures are reduced transcript record envelopes from the live store, with text,
-IDs, dates and paths replaced; status/age/error variants are deterministic
-replays. Tests fix time at 2026-11-01 12:00 UTC. Under `fixtures/claude_code/project/`:
+- Tool_use blocks or tool_use stop reasons indicate pending generation. A last user
+  prompt or tool_result also means generating. Under 1800 seconds is working;
+  at/after 1800 is error. `[Request interrupted by user` makes that user record idle.
+- end_turn, max_tokens and stop_sequence are ended turns. Only this turn's text is
+  tested for trailing `?` or `<question>` / `<request_user_input>` markers: waiting.
+  Empty/thinking-only text never reuses an earlier question. Otherwise done below
+  3600 seconds, idle at/after 3600 seconds.
+- An API error on the last meaningful record (isApiErrorMessage or non-null error)
+  supplies error evidence. Recompute it per record; tool_result is_error is not an
+  API error and cannot remain sticky across later activity.
+
+Base fixtures under `fixtures/claude_code/project/`, fixed clock 12:00 UTC:
 
 | Fixture | Rule / behavior |
 |---|---|
 | working.jsonl | 1: pending tool, 1 minute old |
-| stuck.jsonl | 2: pending tool, 11 minutes old; doctor reason |
-| waiting.jsonl | 3: end_turn with a trailing question |
-| done.jsonl | 4: recent end_turn; aiTitle; sidechain and queue line ignored |
-| idle.jsonl | 4: end_turn 61 minutes old |
-| error.jsonl | 5: explicit API error |
-| malformed.jsonl | Valid user followed by a truncated final JSON record |
-| empty.jsonl | Zero-byte transcript, counted as skipped session |
+| stuck.jsonl | 2: pending tool, 40 minutes old; doctor reason |
+| waiting.jsonl | 3: ended question |
+| done.jsonl | 4: recent completion; aiTitle, ignored sidechain/queue line |
+| idle.jsonl | 4: completion 61 minutes old |
+| error.jsonl | 5: last API error |
+| malformed.jsonl | Valid prompt then truncated JSON; prompt is working |
+| empty.jsonl | Zero-byte transcript |
 
-Live inspection (Omarchy, 2026-11-01) confirmed tool_use/end_turn stop reasons,
-including separate thinking blocks. The question heuristic is implemented as
-written; code-block punctuation and indirect requests can still misclassify it.
-Transcript status cannot prove whether a process is alive. No change to the plan's
-heuristic was made. Last nonempty assistant text is retained across thinking blocks.
+`tests/round2.rs` creates temporary regression fixtures through the Source seam:
+issue23 covers large final records (including an 8-day-old head), aligned tail
+starts, 64 KiB/128 KiB ±1 records and the 64 MiB fallback cap; issue24 covers prompt,
+tool result and interruption tails; issue25 covers tool failure/recovery and last
+API errors; issue28 covers injected metadata/control characters; issue29 covers an
+answered question followed by thinking-only completion; issue32 covers cwd changes.
+Additional tests cover ended stop reasons and the 30-minute threshold.
+
+Round 2 live sampling found mid-turn idle, sticky tool failures and stale question
+reuse. These were bugs in transcript interpretation and are fixed. Long calls
+observed on both machines motivated the agreed threshold increase to 30 minutes.
+Question punctuation is still a heuristic; no pane/process inference is used.

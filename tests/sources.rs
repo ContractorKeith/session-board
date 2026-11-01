@@ -1,3 +1,4 @@
+mod common;
 use session_board::{
     cli::{self, AgentFilter, StatusFilter},
     config::Config,
@@ -58,7 +59,14 @@ fn every_status_rule_and_ignored_records() {
             ("done", Status::Done),
             ("idle", Status::Idle),
             ("error", Status::Error),
-            ("malformed", Status::Idle),
+            (
+                "malformed",
+                if source.agent() == session_board::model::Agent::ClaudeCode {
+                    Status::Working
+                } else {
+                    Status::Idle
+                },
+            ),
         ] {
             let s = result
                 .sessions
@@ -73,9 +81,9 @@ fn every_status_rule_and_ignored_records() {
         }
         assert!(
             result
-                .warnings
+                .status_reasons
                 .iter()
-                .any(|s| s.contains("older than 10 minutes"))
+                .any(|s| s.contains("30 minutes"))
         );
     }
 }
@@ -249,13 +257,10 @@ fn normalize_settings_missing_paths_and_git_internals() {
     let temp = tempfile::tempdir().unwrap();
     let repo = temp.path().join("repo");
     fs::create_dir(&repo).unwrap();
+    common::git(&repo, &["init", "-q"]);
     assert!(
-        Command::new("git")
-            .args(["init", "-q"])
-            .arg(&repo)
-            .status()
-            .unwrap()
-            .success()
+        repo.join(".git").is_dir(),
+        "git init must use the test project"
     );
     let mut resolver = ProjectRoots::default();
     assert_eq!(
@@ -316,9 +321,9 @@ fn large_transcript_uses_tail_and_ignores_corruption_in_omitted_middle() {
     let head = fs::read_to_string("fixtures/claude_code/project/working.jsonl").unwrap();
     let end = fs::read_to_string("fixtures/claude_code/project/done.jsonl").unwrap();
     let text = head
-        + &"{\"type\":\"attachment\",\"content\":\"placeholder\"}\n".repeat(4000)
+        + &"{\"type\":\"attachment\",\"content\":\"placeholder\"}\n".repeat(10000)
         + "invalid middle line\n"
-        + &"{\"type\":\"attachment\"}\n".repeat(4000)
+        + &"{\"type\":\"attachment\"}\n".repeat(10000)
         + &end;
     fs::write(temp.path().join("p/large.jsonl"), text).unwrap();
     let result = Claude {
@@ -348,7 +353,7 @@ fn large_transcript_uses_tail_and_ignores_corruption_in_omitted_middle() {
     .scan(&Config::default());
     assert_eq!(
         result.sessions[0].status,
-        Status::Idle,
+        Status::Working,
         "head error must not leak across omitted history"
     );
 }
@@ -366,7 +371,7 @@ fn tool_results_clear_pending_calls_without_ending_a_turn() {
         now: NOW,
     };
     let scanned = source.scan(&Config::default());
-    assert_eq!(scanned.sessions[0].status, Status::Idle);
+    assert_eq!(scanned.sessions[0].status, Status::Working);
     assert_eq!(scanned.sessions[0].last_user_text, "User placeholder");
     let head =
         fs::read_to_string("fixtures/codex/sessions/2026/11/01/rollout-malformed.jsonl").unwrap();

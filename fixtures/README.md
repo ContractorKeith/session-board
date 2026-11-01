@@ -15,3 +15,7 @@ with relative transcript paths, independent of the checkout and current clock.
 Tests also use temporary stores for malformed bytes, normalization, tool results,
 large-file tail reads and CLI integration. Every CLI subprocess overrides both
 sboard directories and both agent homes; tests never read the owner's stores.
+
+`tests/round2.rs` builds deterministic temporary transcript fixtures for issues #21–#32,
+including exact-size records and sparse files over the fallback cap. Source pages map
+these regression names to the observed live failures.

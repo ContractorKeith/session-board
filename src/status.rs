@@ -1,6 +1,6 @@
 use crate::model::Status;
 
-pub const WORKING_SECONDS: i64 = 10 * 60;
+pub const WORKING_SECONDS: i64 = 30 * 60;
 pub const DONE_SECONDS: i64 = 60 * 60;
 
 #[derive(Debug, Default)]
