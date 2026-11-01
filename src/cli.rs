@@ -234,7 +234,7 @@ pub fn filter(
     projects.sort_by(|a, b| {
         let activity =
             |p: &crate::model::Project| p.sessions.first().map_or(i64::MIN, |s| s.last_activity_at);
-        let priority = |p: &crate::model::Project| p.sessions.first().map_or(4, &rank);
+        let priority = |p: &crate::model::Project| p.sessions.first().map_or(4, rank);
         (if attention {
             priority(a).cmp(&priority(b))
         } else {
