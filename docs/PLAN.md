@@ -1,6 +1,6 @@
 # session-board — Build Plan
 
-Status: v0.1.0 release candidate; M0–M7 merged, final release review and tag pending. Written from Keith's scope note and a read of
+Status: v0.1.0; M0–M7 complete. Written from Keith's scope note and a read of
 [agent-deck](https://github.com/asheshgoplani/agent-deck) (Go, MIT, tmux-backed, 1.2k stars),
 [agenthud](https://github.com/neochoon/agenthud) (TypeScript, MIT, read-only HUD) and
 [agent-mux](https://github.com/leonardcser/agent-mux) (Rust, MIT, tmux pane list), with a
@@ -216,6 +216,8 @@ the foreground child; normal child exit returns terminal ownership to sboard.
 When the child stops (for example Ctrl-Z), sboard returns terminal ownership and
 stops too, allowing the caller's shell to report the job. `fg` resumes sboard,
 which gives the agent the foreground terminal and continues its process group.
+`bg` leaves the shell in control and stops sboard again until a foreground resume;
+terminal hangup during that interval still cleans up the stopped agent group.
 
 TUI keys: `j k` move, `h l` fold, `Enter` open, `n` new, `w` new in worktree, `p` pin, `t` tag,
 `m` mark read, `a` archive toggle, `A` show archived, `s` cycle sort, `g` group by tag/project, `/` filter, `r` rescan,

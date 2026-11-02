@@ -6,7 +6,7 @@ project, shows working / waiting / idle / error / done, jumps to the tmux pane o
 session, and launches new sessions in a project or a fresh git worktree. Observes agents; never
 owns them. MIT.
 
-Status: v0.1.0 release candidate. See `docs/PLAN.md` for scope and `AGENTS.md` for commands.
+Status: v0.1.0. See `docs/PLAN.md` for scope and `AGENTS.md` for commands.
 The package is `session-board`; the binary is `sboard`.
 
 ## Install
@@ -79,8 +79,8 @@ State: `~/.local/state/sboard/state.toml` (override `SBOARD_STATE_DIR`). Config:
 defaults are in `docs/PLAN.md` §6.
 
 Config, state and the optional Codex title index are checked as regular files before
-reading. FIFOs, devices, directories and symlink files are rejected without opening
-them; bad config is an error, bad state warns and uses empty state, and a bad index
+reading; symlinks to regular files are supported. FIFOs, devices and directories are
+rejected without opening them; bad config is an error, bad state warns and uses empty state, and a bad index
 warns/counts a skipped store while falling back to prompt titles.
 
 State saves merge read marks by maximum timestamp and apply only additions/removals since
