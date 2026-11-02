@@ -535,14 +535,14 @@ fn closed_or_full_stdout_does_not_panic() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.starts_with("sboard: "), "{stderr}");
     assert!(!stderr.contains("panicked"), "{stderr}");
-    let mut child = command(temp.path())
+    // Close the reader before spawning: even a tiny response must hit EPIPE.
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let output = command(temp.path())
         .args(["list", "--json"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stdout(Stdio::from(writer))
+        .output()
         .unwrap();
-    drop(child.stdout.take());
-    let output = child.wait_with_output().unwrap();
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert!(
         !String::from_utf8_lossy(&output.stderr).contains("panicked"),
