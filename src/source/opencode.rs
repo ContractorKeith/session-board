@@ -38,15 +38,18 @@ impl Source for Opencode {
                 ))
             })?;
             for row in rows {
-                let Ok((native_id, cwd, title, started, updated)) = row else {
-                    result.skipped_sessions += 1;
+                let Some((id, cwd, title, started, updated)) =
+                    sqlite::row(row, &mut result.skipped_sessions)?
+                else {
                     continue;
                 };
-                let id = read::title(&native_id);
+                if !sqlite::valid_id(&id) || cwd.contains('\0') {
+                    result.skipped_sessions += 1;
+                    continue;
+                }
                 let cwd = PathBuf::from(cwd);
-                let Some(cwd) = normalize(&cwd, None).filter(|_| {
-                    !id.is_empty() && cwd.is_absolute() && started >= 0 && updated >= 0
-                }) else {
+                let Some(cwd) = normalize(&cwd, None).filter(|_| started >= 0 && updated >= 0)
+                else {
                     result.skipped_sessions += 1;
                     continue;
                 };
@@ -54,17 +57,7 @@ impl Source for Opencode {
                 if self.now.saturating_sub(last) > i64::from(config.window_days) * 86400 {
                     continue;
                 }
-                let (user, assistant, first_user, tail) =
-                    match messages(&connection, &native_id, &mut result) {
-                        Ok(messages) => messages,
-                        Err(error) => {
-                            result.skipped_sessions += 1;
-                            result
-                                .warnings
-                                .push(format!("{} session {id}: {error}", self.path.display()));
-                            continue;
-                        }
-                    };
+                let (user, assistant, first_user, tail) = messages(&connection, &id, &mut result)?;
                 let status = status::derive(&tail, last, self.now);
                 if tail.pending && status == Status::Error {
                     result.status_reasons.push(format!(
@@ -87,7 +80,7 @@ impl Source for Opencode {
                     last_user_text: read::preview(&user),
                     last_assistant_text: read::preview(&assistant),
                     transcript_path: self.path.clone(),
-                    resume_hint: format!("opencode --session {id}"),
+                    resume_hint: format!("opencode --session={id}"),
                     pane: None,
                 });
             }
@@ -100,9 +93,8 @@ impl Source for Opencode {
     }
 }
 
-fn json(data: rusqlite::Result<String>, result: &mut SourceScan) -> Option<Value> {
-    match data
-        .ok()
+fn json(data: String, result: &mut SourceScan) -> Option<Value> {
+    match Some(data)
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .filter(Value::is_object)
     {
@@ -129,19 +121,38 @@ fn messages(
     let (mut user, mut assistant, mut first_user) = (String::new(), String::new(), None);
     let mut tail = Tail::default();
     while let Some(row) = rows.next()? {
-        let Some(message) = json(row.get(1), result) else {
+        let Some(data) = sqlite::row(row.get::<_, String>(1), &mut result.skipped_lines)? else {
+            continue;
+        };
+        let Some(message) = json(data, result) else {
             continue;
         };
         let role = message["role"].as_str().unwrap_or_default();
         if !matches!(role, "user" | "assistant") {
             continue;
         }
-        let message_id: String = row.get(0)?;
+        let finish = message.get("finish");
+        let completed = message.get("time").and_then(|time| time.get("completed"));
+        let error = message.get("error").filter(|e| !e.is_null());
+        if finish.is_some_and(|f| !f.is_string())
+            || completed.is_some_and(|t| !t.is_null() && !t.is_number())
+            || error.is_some_and(|e| !e.is_object())
+        {
+            result.skipped_lines += 1;
+            continue;
+        }
+        let Some(message_id) = sqlite::row(row.get::<_, String>(0), &mut result.skipped_lines)?
+        else {
+            continue;
+        };
         let mut text = String::new();
         let mut pending_tool = false;
         let mut tool_error = false;
         for part in parts.query_map([&message_id, id], |row| row.get::<_, String>(0))? {
-            let Some(part) = json(part, result) else {
+            let Some(data) = sqlite::row(part, &mut result.skipped_lines)? else {
+                continue;
+            };
+            let Some(part) = json(data, result) else {
                 continue;
             };
             match part["type"].as_str() {
@@ -171,11 +182,16 @@ fn messages(
                 ..Default::default()
             };
         } else {
-            let error = message.get("error").is_some_and(|e| !e.is_null()) || tool_error;
-            let ended = !message["time"]["completed"].is_null()
-                || message["finish"]
-                    .as_str()
-                    .is_some_and(|s| s != "tool-calls" && !s.is_empty());
+            if error.is_some_and(|e| e["name"] == "MessageAbortedError") {
+                tail = Tail::default();
+                assistant = text;
+                continue;
+            }
+            let error = error.is_some() || tool_error;
+            let ended = finish
+                .and_then(Value::as_str)
+                .is_some_and(|f| !matches!(f, "tool-calls" | "unknown" | ""))
+                || (finish.is_none() && completed.is_some_and(Value::is_number));
             tail = Tail {
                 pending: pending_tool || (!ended && !error),
                 ended: ended && !error,

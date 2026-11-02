@@ -23,46 +23,62 @@ impl Source for Grok {
             return result;
         };
         let mut scan = || -> rusqlite::Result<()> {
-            let mut statement = connection.prepare("SELECT session_id, cwd, updated_at, title, content FROM session_docs ORDER BY session_id")?;
-            let rows = statement.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                ))
-            })?;
+            let cutoff = self
+                .now
+                .saturating_sub(i64::from(config.window_days) * 86400);
+            let mut statement = connection.prepare("SELECT session_id, cwd, updated_at, title, substr(content, -8192), substr(ltrim(content, ?3), 1, 8192) FROM session_docs WHERE (updated_at < 1000000000000 AND updated_at >= ?1) OR updated_at >= max(1000000000000, ?2)")?;
+            let whitespace = "\t\n\r \u{b}\u{c}\u{85}\u{a0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}";
+            let rows = statement.query_map(
+                rusqlite::params![cutoff, cutoff.saturating_mul(1000), whitespace],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                    ))
+                },
+            )?;
             for row in rows {
-                let Ok((id, cwd, time, title, content)) = row else {
-                    result.skipped_sessions += 1;
-                    continue;
-                };
-                let id = read::title(&id);
-                let cwd = PathBuf::from(cwd);
-                let Some(cwd) = normalize(&cwd, None)
-                    .filter(|_| !id.is_empty() && cwd.is_absolute() && time >= 0)
+                let Some((id, cwd, time, title, content, head)) =
+                    sqlite::row(row, &mut result.skipped_sessions)?
                 else {
+                    continue;
+                };
+                if !sqlite::valid_id(&id) || cwd.contains('\0') {
+                    result.skipped_sessions += 1;
+                    continue;
+                }
+                let cwd = PathBuf::from(cwd);
+                let Some(cwd) = normalize(&cwd, None).filter(|_| time >= 0) else {
                     result.skipped_sessions += 1;
                     continue;
                 };
-                let time = if time > 1_000_000_000_000 {
+                let mut time = if time >= 1_000_000_000_000 {
                     time / 1000
                 } else {
                     time
                 };
-                if self.now.saturating_sub(time) > i64::from(config.window_days) * 86400 {
-                    continue;
+                if time > self.now.saturating_add(3600) {
+                    result.warnings.push(format!(
+                        "{} grok:{id}: timestamp more than one hour in the future; clamped to now",
+                        self.path.display()
+                    ));
+                    time = self.now;
                 }
                 let content = content.unwrap_or_default();
                 let title = title
                     .map(|s| read::title(&s))
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| {
-                        read::title(content.lines().next().unwrap_or_default())
-                            .chars()
-                            .take(60)
-                            .collect()
+                        head.unwrap_or_default()
+                            .lines()
+                            .map(read::title)
+                            .find(|s| !s.is_empty())
+                            .map(|s| s.chars().take(60).collect())
+                            .unwrap_or_else(|| id.clone())
                     });
                 result.sessions.push(Session {
                     id: format!("grok:{id}"),
@@ -77,10 +93,10 @@ impl Source for Grok {
                     } else {
                         Status::Idle
                     },
-                    last_user_text: read::preview(&content),
+                    last_user_text: String::new(),
                     last_assistant_text: read::preview(&content),
                     transcript_path: self.path.clone(),
-                    resume_hint: format!("grok --resume {id}"),
+                    resume_hint: format!("grok --resume={id}"),
                     pane: None,
                 });
             }

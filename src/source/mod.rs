@@ -47,8 +47,27 @@ pub fn homes(home: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf)
     )
 }
 
+/// Resolve the SQLite stores once for discovery, doctor and watcher roots.
+pub fn database_paths(home: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let env = |key| {
+        std::env::var_os(key)
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from)
+    };
+    let grok = env("GROK_HOME")
+        .unwrap_or_else(|| home.join(".grok"))
+        .join("sessions/session_search.sqlite");
+    let opencode = env("OPENCODE_DB").unwrap_or_else(|| {
+        env("XDG_DATA_HOME")
+            .unwrap_or_else(|| home.join(".local/share"))
+            .join("opencode/opencode.db")
+    });
+    (grok, opencode)
+}
+
 pub fn registry_at(home: &std::path::Path) -> Registry {
     let (claude, codex) = homes(home);
+    let (grok, opencode) = database_paths(home);
     let now = read::now();
     vec![
         Box::new(claude::Claude {
@@ -60,12 +79,9 @@ pub fn registry_at(home: &std::path::Path) -> Registry {
             index: codex.join("session_index.jsonl"),
             now,
         }),
-        Box::new(grok::Grok {
-            path: home.join(".grok/sessions/session_search.sqlite"),
-            now,
-        }),
+        Box::new(grok::Grok { path: grok, now }),
         Box::new(opencode::Opencode {
-            path: home.join(".local/share/opencode/opencode.db"),
+            path: opencode,
             now,
         }),
     ]

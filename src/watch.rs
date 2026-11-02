@@ -184,6 +184,7 @@ impl Scans {
     pub fn start() -> io::Result<Self> {
         let home = cli::home()?;
         let (claude, codex) = source::homes(&home);
+        let (grok, opencode) = source::database_paths(&home);
         let mut roots = ProjectRoots::default();
         let cancelled = roots.cancel_handle();
         let panic_once = std::env::var("SBOARD_SCAN_PROBE").as_deref() == Ok("panic-once");
@@ -191,6 +192,11 @@ impl Scans {
             vec![
                 ("claude_code".into(), claude.join("projects")),
                 ("codex".into(), codex.join("sessions")),
+                ("grok".into(), grok.parent().unwrap_or(&home).to_path_buf()),
+                (
+                    "opencode".into(),
+                    opencode.parent().unwrap_or(&home).to_path_buf(),
+                ),
             ],
             REFRESH,
             cancelled,

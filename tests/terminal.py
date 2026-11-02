@@ -55,8 +55,11 @@ def case(mode):
         root = Path(tmp)
         (root / 'claude/projects/project').mkdir(parents=True)
         (root / 'codex/sessions').mkdir(parents=True)
+        (root / '.grok/sessions').mkdir(parents=True)
+        (root / '.local/share/opencode').mkdir(parents=True)
         fixture = 'waiting' if mode in ('attention-resume', 'attention-fresh-pane', 'attention-collapsed-read', 'attention-read-in-child') else 'done'
         rows = [json.loads(line) for line in Path(f'fixtures/claude_code/project/{fixture}.jsonl').read_text().splitlines()]
+
         for row in rows:
             if 'timestamp' in row: row['timestamp'] = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat().replace('+00:00', 'Z')
         (root / 'claude/projects/project/session.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
@@ -129,6 +132,9 @@ def case(mode):
             for row in rows:
                 if 'cwd' in row: row['cwd'] = str(root)
             (root / 'claude/projects/project/session.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        env.pop('GROK_HOME', None)
+        env.pop('OPENCODE_DB', None)
+        env.pop('XDG_DATA_HOME', None)
         env.pop('NO_COLOR', None)
         if mode.startswith('color-'): env['NO_COLOR'] = '1' if mode == 'color-off' else ''
         env.pop('SBOARD_SCAN_PROBE', None)

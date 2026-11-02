@@ -45,6 +45,12 @@ pub fn run(roots: &mut ProjectRoots, options: &Options) -> io::Result<Outcome> {
     warnings.extend(state_warnings);
     warnings.extend(State::cleanup(&State::path()?));
     warnings.extend(normalize_settings(&mut config, &mut state, &home));
+    let selected = options.agent.map(|agent| match agent {
+        AgentFilter::ClaudeCode => "claude_code",
+        AgentFilter::Codex => "codex",
+        AgentFilter::Grok => "grok",
+        AgentFilter::Opencode => "opencode",
+    });
     let disabled = [
         (!config.agents.claude_code, "claude_code"),
         (!config.agents.codex, "codex"),
@@ -52,7 +58,7 @@ pub fn run(roots: &mut ProjectRoots, options: &Options) -> io::Result<Outcome> {
         (!config.agents.opencode, "opencode"),
     ]
     .into_iter()
-    .filter_map(|(off, name)| off.then_some(name))
+    .filter_map(|(off, name)| (off && selected.is_none_or(|s| s == name)).then_some(name))
     .collect::<Vec<_>>();
     if options.all {
         config.window_days = u32::MAX;
@@ -69,7 +75,20 @@ pub fn run(roots: &mut ProjectRoots, options: &Options) -> io::Result<Outcome> {
         || config.agents.grok && stores[2].exists
         || config.agents.opencode && stores[3].exists);
     if missing {
-        warnings.push(format!("no enabled stores found; looked for claude_code at {} and codex at {}, grok at {} and opencode at {}; disabled by config: {}", stores[0].path.display(), stores[1].path.display(), stores[2].path.display(), stores[3].path.display(), if disabled.is_empty() { "none".into() } else { disabled.join(", ") }));
+        let looked_for = stores
+            .iter()
+            .filter(|s| selected.is_none_or(|name| name == s.agent))
+            .map(|s| format!("{} at {}", s.agent, s.path.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        warnings.push(format!(
+            "no enabled stores found; looked for {looked_for}; disabled by config: {}",
+            if disabled.is_empty() {
+                "none".into()
+            } else {
+                disabled.join(", ")
+            }
+        ));
     }
     let project = options
         .project

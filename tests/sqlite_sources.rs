@@ -42,7 +42,9 @@ fn command(home: &Path) -> Command {
         .env("SBOARD_CONFIG_DIR", home.join("config"))
         .env_remove("CLAUDE_CONFIG_DIR")
         .env_remove("CODEX_HOME")
-        .env_remove("XDG_DATA_HOME");
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("GROK_HOME")
+        .env_remove("OPENCODE_DB");
     command
 }
 #[test]
@@ -64,7 +66,7 @@ fn grok_fixture_rules_and_bounded_utf8_content() {
     assert_eq!(recent.last_activity_at, NOW - 60);
     assert_eq!(recent.started_at, NOW - 60);
     assert_eq!(recent.status, Status::Done); // A question cannot imply waiting in this flat index.
-    assert_eq!(recent.resume_hint, "grok --resume recent");
+    assert_eq!(recent.resume_hint, "grok --resume=recent");
     assert_eq!(recent.transcript_path, path);
     let old = result.sessions.iter().find(|s| s.id == "grok:old").unwrap();
     assert_eq!(old.status, Status::Idle);
@@ -83,10 +85,9 @@ fn grok_fixture_rules_and_bounded_utf8_content() {
         .iter()
         .find(|s| s.id == "grok:recent")
         .unwrap();
-    for text in [&recent.last_user_text, &recent.last_assistant_text] {
-        assert!(text.len() <= 8192);
-        assert!(text.ends_with("END"));
-    }
+    assert!(recent.last_user_text.is_empty());
+    assert!(recent.last_assistant_text.len() <= 8192);
+    assert!(recent.last_assistant_text.ends_with("END"));
     assert!(
         grok(&path)
             .scan(&Config {
@@ -131,7 +132,7 @@ fn opencode_fixture_rules_and_texts() {
             }
         );
         assert_eq!(session.started_at, 1793530000);
-        assert_eq!(session.resume_hint, format!("opencode --session {id}"));
+        assert_eq!(session.resume_hint, format!("opencode --session={id}"));
         assert_eq!(session.cwd, Path::new("/home/user/project"));
         if id == "done" {
             assert_eq!(session.title, "User placeholder");
@@ -188,7 +189,7 @@ fn sqlite_wal_snapshot_never_creates_sidecars() {
     no_sidecars(&path);
     let scan = grok(&path).scan(&Config::default());
     assert_eq!(scan.sessions.len(), 2);
-    assert!(scan.warnings.iter().any(|s| s.contains("immutable")));
+    assert!(scan.warnings.is_empty());
     no_sidecars(&path);
 }
 #[test]
@@ -340,7 +341,7 @@ fn opencode_completion_recovery_malformed_rows_and_preview_bounds() {
 }
 
 #[test]
-fn active_wal_files_are_untouched_and_fallback_warns() {
+fn active_wal_database_and_frames_are_untouched() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("store.db");
     database(&path, include_str!("../fixtures/grok/session_search.sql"));
@@ -351,7 +352,14 @@ fn active_wal_files_are_untouched_and_fallback_warns() {
             .unwrap()
             .map(|entry| {
                 let entry = entry.unwrap();
-                (entry.file_name(), fs::read(entry.path()).unwrap())
+                (
+                    entry.file_name(),
+                    if entry.file_name().to_string_lossy().ends_with("-shm") {
+                        Vec::new()
+                    } else {
+                        fs::read(entry.path()).unwrap()
+                    },
+                )
             })
             .collect();
         files.sort_by(|a, b| a.0.cmp(&b.0));
@@ -367,9 +375,9 @@ fn active_wal_files_are_untouched_and_fallback_warns() {
             .find(|s| s.id == "grok:recent")
             .unwrap()
             .title,
-        "Title placeholder"
+        "Uncheckpointed"
     );
-    assert!(result.warnings.iter().any(|s| s.contains("uncheckpointed")));
+    assert!(result.warnings.is_empty());
     assert_eq!(snapshot(), before);
     drop(writer);
     no_sidecars(&path);
