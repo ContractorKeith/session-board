@@ -343,7 +343,14 @@ impl Decoder {
                         self.pending.drain(..=offset);
                         continue;
                     };
-                    (KeyCode::Char(text.chars().next().unwrap()), width)
+                    (
+                        KeyCode::Char(
+                            text.chars()
+                                .next()
+                                .expect("validated UTF-8 slice is nonempty"),
+                        ),
+                        width,
+                    )
                 }
             };
             events.push(key(code, modifiers));

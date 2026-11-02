@@ -1,4 +1,7 @@
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each integration suite uses a subset of common helpers"
+)]
 mod common;
 use rusqlite::Connection;
 use session_board::{

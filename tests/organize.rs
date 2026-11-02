@@ -303,7 +303,7 @@ fn issue70_save_canonicalizes_aliases_before_removal() {
     let home = cli::home().unwrap();
     let home_alias = home.join(".cache/../.cache");
     let seed = State {
-        pins: vec![root.clone(), temp.path().join("a/../b/"), alias],
+        pins: vec![root, temp.path().join("a/../b/"), alias],
         tags: BTreeMap::from([(home_alias, vec!["safe".into()])]),
         ..Default::default()
     };
