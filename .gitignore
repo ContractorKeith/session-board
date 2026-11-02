@@ -2,3 +2,4 @@
 *.swp
 .env
 .sboard-dev/
+tests/__pycache__/
