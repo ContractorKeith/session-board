@@ -204,18 +204,21 @@ impl Delivery {
 }
 impl Notifier for Delivery {
     fn notify(&mut self, title: &str, body: &str) -> io::Result<()> {
-        if self
+        match self
             .sender
             .as_ref()
             .unwrap()
             .try_send((title.into(), body.into()))
-            .is_err()
-            && !self.queue_warned
         {
-            self.queue_warned = true;
-            self.queue_warning = Some(
-                "desktop notification: queue full or worker stopped; notification dropped".into(),
-            );
+            Ok(()) => self.queue_warned = false,
+            Err(_) if !self.queue_warned => {
+                self.queue_warned = true;
+                self.queue_warning = Some(
+                    "desktop notification: queue full or worker stopped; notification dropped"
+                        .into(),
+                );
+            }
+            Err(_) => {}
         }
         Ok(())
     }
@@ -268,7 +271,13 @@ impl Transitions {
                         },
                     )
                 });
-                current.insert(key, (session.status, session.last_activity_at));
+                let activity = self
+                    .previous
+                    .get(&key)
+                    .map_or(session.last_activity_at, |(_, seen)| {
+                        (*seen).max(session.last_activity_at)
+                    });
+                current.insert(key, (session.status, activity));
                 if enabled
                     && changed
                     && matches!(
@@ -305,7 +314,8 @@ impl Transitions {
                 let _ = notifier.notify(&title, &body);
             }
         }
-        self.previous = current;
+        // Missing stores and rolled-back transcripts must not erase known activity.
+        self.previous.extend(current);
         self.scanned_at = Some(now);
     }
 }

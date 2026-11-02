@@ -344,3 +344,87 @@ fn first_seen_recent_and_same_status_waiting_activity() {
         "reappearing old transcript must stay silent"
     );
 }
+
+#[test]
+fn absent_store_preserves_a_known_transition_at_the_original_timestamp() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = temp.path().join("store");
+    std::fs::create_dir_all(store.join("project")).unwrap();
+    let transcript = store.join("project/session.jsonl");
+    std::fs::copy("fixtures/claude_code/project/working.jsonl", &transcript).unwrap();
+    let mut tracker = Transitions::default();
+    let mut record = Recording::default();
+    tracker.scan_at(&projects(&store), true, &mut record, NOW);
+    std::fs::rename(&store, temp.path().join("absent")).unwrap();
+    tracker.scan_at(&projects(&store), true, &mut record, NOW + 10);
+    std::fs::rename(temp.path().join("absent"), &store).unwrap();
+    let waiting = std::fs::read_to_string("fixtures/claude_code/project/waiting.jsonl")
+        .unwrap()
+        .replace("\"waiting\"", "\"working\"");
+    std::fs::write(&transcript, waiting).unwrap();
+    tracker.scan_at(&projects(&store), true, &mut record, NOW + 20);
+    assert_eq!(
+        record.calls.len(),
+        1,
+        "known working -> waiting was forgotten while the store was absent"
+    );
+    tracker.scan_at(&projects(&store), true, &mut record, NOW + 30);
+    assert_eq!(record.calls.len(), 1);
+}
+
+#[test]
+fn activity_rollback_then_restore_does_not_notify_the_same_turn_twice() {
+    let mut p = projects(std::path::Path::new("fixtures/claude_code"));
+    p[0].sessions.truncate(1);
+    p[0].sessions[0].status = session_board::model::Status::Working;
+    p[0].sessions[0].last_activity_at = NOW;
+    let mut tracker = Transitions::default();
+    let mut record = Recording::default();
+    tracker.scan_at(&p, true, &mut record, NOW);
+    p[0].sessions[0].status = session_board::model::Status::Waiting;
+    tracker.scan_at(&p, true, &mut record, NOW + 1);
+    p[0].sessions[0].last_activity_at = NOW - 5;
+    tracker.scan_at(&p, true, &mut record, NOW + 2);
+    p[0].sessions[0].last_activity_at = NOW;
+    tracker.scan_at(&p, true, &mut record, NOW + 3);
+    assert_eq!(
+        record.calls.len(),
+        1,
+        "restoring the already-seen activity notified again"
+    );
+    p[0].sessions[0].last_activity_at = NOW + 1;
+    tracker.scan_at(&p, true, &mut record, NOW + 4);
+    assert_eq!(
+        record.calls.len(),
+        2,
+        "a genuinely newer turn must still notify"
+    );
+}
+
+#[test]
+fn five_transitions_are_individual_but_exactly_six_are_a_summary() {
+    for count in [5, 6] {
+        let mut p = projects(std::path::Path::new("fixtures/claude_code"));
+        let sample = p[0].sessions[0].clone();
+        p[0].sessions = (0..count)
+            .map(|n| {
+                let mut s = sample.clone();
+                s.id = format!("boundary:{n}");
+                s.transcript_path = format!("boundary-{n}").into();
+                s.status = session_board::model::Status::Working;
+                s
+            })
+            .collect();
+        let mut tracker = Transitions::default();
+        let mut record = Recording::default();
+        tracker.scan_at(&p, true, &mut record, NOW);
+        for s in &mut p[0].sessions {
+            s.status = session_board::model::Status::Waiting;
+        }
+        tracker.scan_at(&p, true, &mut record, NOW + 1);
+        assert_eq!(record.calls.len(), if count == 5 { 5 } else { 1 });
+        if count == 6 {
+            assert_eq!(record.calls[0].0, "sboard: 6 sessions need you");
+        }
+    }
+}

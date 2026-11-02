@@ -191,3 +191,38 @@ fn notify_send_escapes_markup_and_caps_complete_arguments() {
     assert!(!args[4].contains(['<', '>']));
     assert!(!args[4].ends_with('&'));
 }
+
+#[test]
+fn queue_overflow_warns_again_after_delivery_recovers() {
+    let entered = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut worker = Delivery::start(Blocked {
+        entered: entered.clone(),
+        release: release.clone(),
+        calls: calls.clone(),
+    })
+    .unwrap();
+    for episode in 0..2 {
+        release.store(false, Ordering::SeqCst);
+        entered.store(false, Ordering::SeqCst);
+        worker.notify("start", "body").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !entered.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        for _ in 0..20 {
+            worker.notify("overflow", "body").unwrap();
+        }
+        let warnings = worker.take_warnings();
+        release.store(true, Ordering::SeqCst);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while calls.load(Ordering::SeqCst) < 17 * (episode + 1) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(warnings.len(), 1, "episode {episode} was silent");
+        assert!(warnings[0].contains("queue full"));
+        assert!(worker.take_warnings().is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 17 * (episode + 1));
+    }
+}
