@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import pty
-import select
 import struct
 import subprocess
 import sys
@@ -13,10 +12,12 @@ import tempfile
 import termios
 import time
 from terminal import screen
+from pty_probe import deadline, read_ready
 
 binary = str(Path(sys.argv[1]).resolve())
 for mode in ([sys.argv[2]] if len(sys.argv) > 2 else ('slow', 'disabled', 'fail', 'timeout', 'scan-start')):
-    with tempfile.TemporaryDirectory() as scratch:
+    stage = 'setup'
+    with deadline(lambda: f'tui_notifications_use_real_scan_events_and_config_without_blocking_help [{mode}]: waiting for {stage}'), tempfile.TemporaryDirectory() as scratch, tempfile.TemporaryFile() as errors_file:
         root = Path(scratch)
         for directory in ('claude/projects/project', 'codex/sessions', 'config', 'bin'):
             (root / directory).mkdir(parents=True)
@@ -30,7 +31,8 @@ for mode in ([sys.argv[2]] if len(sys.argv) > 2 else ('slow', 'disabled', 'fail'
             (target or transcript).write_text(''.join(json.dumps(row) + '\n' for row in rows))
         gate = root / 'gate'
         os.mkfifo(gate)
-        gate_fd = os.open(gate, os.O_RDWR | os.O_NONBLOCK)
+        gate_reader = os.open(gate, os.O_RDONLY | os.O_NONBLOCK)
+        gate_fd = os.open(gate, os.O_WRONLY | os.O_NONBLOCK)
         fixture('working')
         entered = root / 'git-entered'
         if mode == 'scan-start':
@@ -50,17 +52,20 @@ for mode in ([sys.argv[2]] if len(sys.argv) > 2 else ('slow', 'disabled', 'fail'
         def controlling_terminal():
             os.setsid()
             fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-        proc = subprocess.Popen([binary], env=env, stdin=slave, stdout=slave, stderr=subprocess.PIPE,
+        stage = 'launch board'
+        proc = subprocess.Popen([binary], env=env, stdin=slave, stdout=slave, stderr=errors_file,
                                 preexec_fn=controlling_terminal)
         os.close(slave)
         output = b''
         def pump():
             global output
-            if select.select([master], [], [], .005)[0]:
-                output += os.read(master, 65536)
+            output += read_ready(master)
         def wait(predicate, description, timeout=15):
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
+            global stage
+            stage = description
+            print(f'{mode}: waiting for {stage}', flush=True)
+            end = time.monotonic() + timeout
+            while time.monotonic() < end:
                 pump()
                 if predicate():
                     return
@@ -103,10 +108,13 @@ for mode in ([sys.argv[2]] if len(sys.argv) > 2 else ('slow', 'disabled', 'fail'
                     command = 'osascript' if sys.platform == 'darwin' else 'notify-send'
                     assert command in screen(output).splitlines()[-1]
                     assert '1 warnings:' in screen(output).splitlines()[-1]
+            stage = 'quit acknowledgement'
             os.write(master, b'q')
             proc.wait(timeout=5)
             assert proc.returncode == 0
-            errors = proc.stderr.read()
+            stage = 'stderr check after exit'
+            errors_file.seek(0)
+            errors = errors_file.read(65536)
             assert not errors, f'notifier wrote over terminal: {errors!r}'
             print(f'{mode}: real scan/event path passed')
         finally:
@@ -117,7 +125,7 @@ for mode in ([sys.argv[2]] if len(sys.argv) > 2 else ('slow', 'disabled', 'fail'
                     proc.wait(timeout=8)
                 except (OSError, subprocess.TimeoutExpired):
                     proc.kill()
-                    proc.wait()
-            proc.stderr.close()
+                    proc.wait(timeout=5)
             os.close(master)
             os.close(gate_fd)
+            os.close(gate_reader)

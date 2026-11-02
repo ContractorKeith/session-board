@@ -336,11 +336,18 @@ mod tests {
         assert!(reconcile(&mut roots, &mut LimitedWatcher, &status));
         assert!(roots[0].watched.is_some());
         assert!(roots[1].watched.is_none());
-        let warnings = statuses.recv().unwrap();
+        let warnings = statuses.recv_timeout(Duration::from_secs(10)).expect(
+            "attachment_failure_preserves_other_roots_and_reports_missing: reconciliation status",
+        );
         assert!(warnings.iter().any(|s| s.contains("unwatched: limited")));
         assert!(warnings.iter().any(|s| s.contains("watch limit")));
         let (watcher, _) = StoreWatcher::new(&[temp.path().join("missing")]).unwrap();
-        assert!(watcher.status.recv().unwrap()[0].contains("unwatched:"));
+        assert!(
+            watcher.status.recv_timeout(Duration::from_secs(10)).expect(
+                "attachment_failure_preserves_other_roots_and_reports_missing: missing-root status"
+            )[0]
+            .contains("unwatched:")
+        );
         assert!(watcher.observed.try_recv().is_err());
     }
     #[test]

@@ -5,7 +5,6 @@ from datetime import datetime, timezone, timedelta
 import os
 from pathlib import Path
 import pty
-import select
 import re
 import unicodedata
 import shlex
@@ -15,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from pty_probe import deadline, drain, read_ready
 
 
 def screen(data):
@@ -48,7 +48,8 @@ def screen(data):
 
 
 def case(mode):
-    with tempfile.TemporaryDirectory() as tmp:
+    stage = 'setup'
+    with deadline(lambda: f'script_pty_terminal_hygiene_and_worker_recovery [{mode}]: waiting for {stage}'), tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         (root / 'claude/projects/project').mkdir(parents=True)
         (root / 'codex/sessions').mkdir(parents=True)
@@ -130,9 +131,10 @@ def case(mode):
         output = b''
         def pump():
             nonlocal output
-            if select.select([master], [], [], .02)[0]:
-                output += os.read(master, 65536)
+            output += read_ready(master, .02)
         def wait_for(predicate, description):
+            nonlocal stage
+            stage = description
             end = time.monotonic() + 8
             while time.monotonic() < end:
                 pump()
@@ -252,8 +254,8 @@ def case(mode):
                     assert colored == (mode == 'color-empty'), (mode, colored)
                 os.write(master, b'q')
             wait_for(lambda: proc.poll() is not None, 'process failed to exit')
-            while select.select([master], [], [], .02)[0]:
-                output += os.read(master, 65536)
+            stage = 'final terminal output'
+            output += drain(master)
             if mode in ('termios', 'cli-termios'):
                 flags = (root / 'exit-flags').read_text()
                 for flag in ('icanon', 'echo', 'icrnl'):
@@ -272,7 +274,7 @@ def case(mode):
                     try: os.kill(int(pidfile.read_text()), signal.SIGKILL)
                     except ProcessLookupError: pass
                 proc.kill()
-                proc.wait()
+                proc.wait(timeout=5)
             os.close(master)
             os.close(slave)
 

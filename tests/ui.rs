@@ -182,7 +182,7 @@ fn recursive_watcher_debounces_single_and_burst_changes() {
         }
         requests
             .recv_timeout(Duration::from_secs(10).saturating_sub(started.elapsed()))
-            .unwrap();
+            .expect("recursive_watcher_debounces_single_and_burst_changes: waiting for debounced write request");
         assert!(started.elapsed() >= watch::DEBOUNCE);
         let count = 1 + drain_requests(&requests);
         if burst {
@@ -300,7 +300,7 @@ fn steady_writes_cannot_starve_refresh() {
         watcher
             .status
             .recv_timeout(Duration::from_secs(10))
-            .unwrap()
+            .expect("steady_writes_cannot_starve_refresh: waiting for watch attachment status")
             .is_empty()
     );
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -365,21 +365,21 @@ fn scans_initial_watcher_wiring_and_panic_recovery() {
     let error = scans
         .results
         .recv_timeout(Duration::from_secs(8))
-        .unwrap()
+        .expect("scans_initial_watcher_wiring_and_panic_recovery: waiting for scan worker result")
         .unwrap_err();
     assert!(error.to_string().starts_with("panicked:"));
     scans.requests.try_send(()).unwrap();
     let initial = scans
         .results
         .recv_timeout(Duration::from_secs(8))
-        .unwrap()
+        .expect("scans_initial_watcher_wiring_and_panic_recovery: waiting for scan worker result")
         .unwrap();
     assert_eq!(initial.projects[0].sessions[0].status, Status::Working);
     fs::copy("fixtures/claude_code/project/waiting.jsonl", &path).unwrap();
     let refreshed = scans
         .results
         .recv_timeout(Duration::from_secs(10))
-        .unwrap()
+        .expect("scans_initial_watcher_wiring_and_panic_recovery: waiting for scan worker result")
         .unwrap();
     assert_eq!(refreshed.projects[0].sessions[0].status, Status::Waiting);
 }
@@ -419,7 +419,7 @@ fn quiet_store_status_crosses_threshold() {
         scans
             .results
             .recv_timeout(Duration::from_secs(5))
-            .unwrap()
+            .expect("quiet_store_status_crosses_threshold: waiting for quiet-store refresh result")
             .unwrap()
             .projects[0]
             .sessions[0]
@@ -430,7 +430,7 @@ fn quiet_store_status_crosses_threshold() {
         scans
             .results
             .recv_timeout(Duration::from_secs(5))
-            .unwrap()
+            .expect("quiet_store_status_crosses_threshold: waiting for quiet-store refresh result")
             .unwrap()
             .projects[0]
             .sessions[0]
@@ -458,7 +458,7 @@ fn burst_coalesces_and_recreated_root_reattaches() {
         watcher
             .status
             .recv_timeout(Duration::from_secs(10))
-            .unwrap()
+            .expect("burst_coalesces_and_recreated_root_reattaches: waiting for watcher attachment/removal acknowledgement")
             .is_empty()
     );
     // Keep all 200 real writes within one debounce window, even under build load.
@@ -487,7 +487,7 @@ fn burst_coalesces_and_recreated_root_reattaches() {
         let warnings = watcher
             .status
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .unwrap();
+            .expect("burst_coalesces_and_recreated_root_reattaches: waiting for watcher attachment/removal acknowledgement");
         if warnings.iter().any(|w| w.contains("unwatched:")) {
             break;
         }
@@ -499,7 +499,7 @@ fn burst_coalesces_and_recreated_root_reattaches() {
         if watcher
             .status
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .unwrap()
+            .expect("burst_coalesces_and_recreated_root_reattaches: waiting for watcher attachment/removal acknowledgement")
             .is_empty()
         {
             break;
@@ -813,16 +813,48 @@ fn small_pane_collapsed_movement_and_folds() {
 
 #[test]
 fn tui_notifications_use_real_scan_events_and_config_without_blocking_help() {
-    let output = std::process::Command::new("python3")
+    use std::{
+        io::{Read, Seek},
+        process::{Command, Stdio},
+    };
+    let mut stdout = tempfile::tempfile().unwrap();
+    let mut stderr = tempfile::tempfile().unwrap();
+    let mut child = Command::new("python3")
         .args(["tests/notify_tui.py", env!("CARGO_BIN_EXE_sboard")])
         .env("PYTHONDONTWRITEBYTECODE", "1")
-        .output()
+        .stdin(Stdio::null())
+        .stdout(stdout.try_clone().unwrap())
+        .stderr(stderr.try_clone().unwrap())
+        .spawn()
         .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(90);
+    while child.try_wait().unwrap().is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let timed_out = child.try_wait().unwrap().is_none();
+    if timed_out {
+        // SIGTERM lets Python's deadline handler run its board/notifier cleanup.
+        let _ = Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status();
+        let cleanup = Instant::now() + Duration::from_secs(10);
+        while child.try_wait().unwrap().is_none() && Instant::now() < cleanup {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if child.try_wait().unwrap().is_none() {
+            child.kill().unwrap();
+        }
+    }
+    let status = child.wait().unwrap();
+    stdout.rewind().unwrap();
+    stderr.rewind().unwrap();
+    let mut out = String::new();
+    let mut err = String::new();
+    stdout.read_to_string(&mut out).unwrap();
+    stderr.read_to_string(&mut err).unwrap();
     assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        !timed_out && status.success(),
+        "tui_notifications_use_real_scan_events_and_config_without_blocking_help: waiting for Python probe exit (90 s limit, timed_out={timed_out})\n{out}\n{err}"
     );
 }
 
