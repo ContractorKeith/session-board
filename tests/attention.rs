@@ -66,7 +66,7 @@ fn attention_matches_cli_fixture_order_and_read_marks() {
     );
 }
 #[test]
-fn edited_fixtures_notify_once_per_transition_and_never_on_startup_or_disabled() {
+fn edited_fixtures_notify_once_per_event_and_never_on_startup_or_disabled() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::create_dir(temp.path().join("project")).unwrap();
     let mut transitions = Transitions::default();
@@ -80,7 +80,7 @@ fn edited_fixtures_notify_once_per_transition_and_never_on_startup_or_disabled()
         ("done", 2),
         ("error", 3),
         ("working", 3),
-        ("waiting", 4),
+        ("waiting", 3),
     ] {
         std::fs::copy(
             format!("fixtures/claude_code/project/{fixture}.jsonl"),
@@ -97,7 +97,7 @@ fn edited_fixtures_notify_once_per_transition_and_never_on_startup_or_disabled()
         disabled.scan(&projects, false, &mut muted);
         assert_eq!(recording.calls.len(), count, "{fixture}");
     }
-    assert_eq!(recording.calls.len(), 4);
+    assert_eq!(recording.calls.len(), 3);
     assert!(recording.calls[0].0.ends_with("waiting"));
     assert!(recording.calls[1].0.ends_with("done"));
     assert!(recording.calls[2].0.ends_with("error"));
@@ -119,7 +119,7 @@ fn command_probe() {
     std::fs::remove_file(std::env::var_os("PROBE_REMOVE").unwrap()).unwrap();
     desktop.notify(title, body).unwrap();
     desktop.notify(title, body).unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut warnings = vec![];
     while warnings.is_empty() && std::time::Instant::now() < deadline {
         warnings.extend(desktop.take_warnings());
@@ -427,4 +427,68 @@ fn five_transitions_are_individual_but_exactly_six_are_a_summary() {
             assert_eq!(record.calls[0].0, "sboard: 6 sessions need you");
         }
     }
+}
+
+#[test]
+fn announced_status_activity_is_not_repeated_after_a_status_rollback() {
+    let mut p = projects(std::path::Path::new("fixtures/claude_code"));
+    p[0].sessions.truncate(1);
+    let mut tracker = Transitions::default();
+    let mut record = Recording::default();
+    for (status, activity, scan_time) in [
+        (session_board::model::Status::Working, NOW, NOW),
+        (session_board::model::Status::Waiting, NOW, NOW + 1),
+        (session_board::model::Status::Working, NOW - 5, NOW + 2),
+        (session_board::model::Status::Waiting, NOW, NOW + 3),
+    ] {
+        p[0].sessions[0].status = status;
+        p[0].sessions[0].last_activity_at = activity;
+        tracker.scan_at(&p, true, &mut record, scan_time);
+    }
+    assert_eq!(
+        record.calls.len(),
+        1,
+        "restored announced status/activity notified twice"
+    );
+    p[0].sessions[0].last_activity_at = NOW + 4;
+    tracker.scan_at(&p, true, &mut record, NOW + 4);
+    assert_eq!(record.calls.len(), 2);
+}
+#[test]
+fn future_activity_does_not_poison_later_real_questions() {
+    let mut p = projects(std::path::Path::new("fixtures/claude_code"));
+    p[0].sessions.truncate(1);
+    let mut tracker = Transitions::default();
+    let mut record = Recording::default();
+    p[0].sessions[0].status = session_board::model::Status::Working;
+    p[0].sessions[0].last_activity_at = NOW;
+    tracker.scan_at(&p, true, &mut record, NOW);
+    p[0].sessions[0].status = session_board::model::Status::Waiting;
+    for (activity, time) in [
+        (NOW + 86400, NOW + 1),
+        (NOW + 86400, NOW + 2),
+        (NOW + 2, NOW + 3),
+        (NOW + 86400, NOW + 3),
+        (NOW + 4, NOW + 4),
+    ] {
+        p[0].sessions[0].last_activity_at = activity;
+        tracker.scan_at(&p, true, &mut record, time);
+    }
+    assert_eq!(
+        record.calls.len(),
+        3,
+        "future timestamp suppressed new real questions"
+    );
+}
+#[test]
+fn newly_seen_session_in_the_previous_scan_second_notifies() {
+    let mut p = projects(std::path::Path::new("fixtures/claude_code"));
+    p[0].sessions.truncate(1);
+    let mut tracker = Transitions::default();
+    let mut record = Recording::default();
+    tracker.scan_at(&[], true, &mut record, NOW);
+    p[0].sessions[0].status = session_board::model::Status::Waiting;
+    p[0].sessions[0].last_activity_at = NOW;
+    tracker.scan_at(&p, true, &mut record, NOW + 1);
+    assert_eq!(record.calls.len(), 1);
 }

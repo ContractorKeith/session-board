@@ -87,6 +87,11 @@ fn osascript(title: &str, body: &str, cancelled: &AtomicBool) -> io::Result<()> 
     run(Command::new("osascript").args(["-e", "on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run", "--", &title, &body]), "osascript", cancelled)
 }
 fn run(command: &mut Command, name: &str, cancelled: &AtomicBool) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
     let mut execute = || -> io::Result<()> {
         let mut child = command
             .stdin(Stdio::null())
@@ -103,8 +108,7 @@ fn run(command: &mut Command, name: &str, cancelled: &AtomicBool) -> io::Result<
                 };
             }
             if cancelled.load(Ordering::Relaxed) || started.elapsed() >= Duration::from_secs(5) {
-                let _ = child.kill();
-                let _ = child.wait();
+                stop(&mut child);
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "delivery cancelled or exceeded 5 s",
@@ -114,6 +118,24 @@ fn run(command: &mut Command, name: &str, cancelled: &AtomicBool) -> io::Result<
         }
     };
     execute().map_err(|error| io::Error::new(error.kind(), format!("{name}: {error}")))
+}
+fn stop(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        unsafe extern "C" {
+            fn kill(pid: std::os::raw::c_int, signal: std::os::raw::c_int) -> std::os::raw::c_int;
+        }
+        if let Ok(pid) = i32::try_from(child.id())
+            && pid > 0
+        {
+            // SAFETY: this unreaped child owns the isolated group created before spawn.
+            unsafe {
+                kill(-pid, signal_hook::consts::SIGKILL);
+            }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 #[derive(Default)]
 pub struct Desktop {
@@ -232,9 +254,16 @@ impl Drop for Delivery {
         }
     }
 }
+type Identity = (PathBuf, String);
+struct Observed {
+    status: Status,
+    raw_activity: i64,
+    watermark: i64,
+}
 #[derive(Default)]
 pub struct Transitions {
-    previous: HashMap<(PathBuf, String), (Status, i64)>,
+    previous: HashMap<Identity, Observed>,
+    announced: HashMap<Identity, Vec<(Status, i64)>>,
     scanned_at: Option<i64>,
 }
 impl Transitions {
@@ -261,30 +290,46 @@ impl Transitions {
                 if current.contains_key(&key) {
                     continue;
                 }
-                let changed = self.scanned_at.is_some_and(|previous_scan| {
-                    self.previous.get(&key).map_or(
-                        session.last_activity_at > previous_scan,
-                        |(status, activity)| {
-                            *status != session.status
-                                || (matches!(session.status, Status::Waiting | Status::Done)
-                                    && session.last_activity_at > *activity)
-                        },
-                    )
-                });
-                let activity = self
-                    .previous
+                let activity = session.last_activity_at.min(now);
+                let old = self.previous.get(&key);
+                let event = (session.status, session.last_activity_at);
+                let announced = self
+                    .announced
                     .get(&key)
-                    .map_or(session.last_activity_at, |(_, seen)| {
-                        (*seen).max(session.last_activity_at)
-                    });
-                current.insert(key, (session.status, activity));
+                    .is_some_and(|events| events.contains(&event));
+                let changed = self.scanned_at.is_some_and(|previous_scan| {
+                    old.map_or(activity >= previous_scan, |seen| {
+                        seen.status != session.status
+                            || (matches!(session.status, Status::Waiting | Status::Done)
+                                && seen.raw_activity != session.last_activity_at
+                                && activity > seen.watermark)
+                    })
+                });
+                // An unchanged future timestamp or a replay must not advance the clock.
+                let watermark = old.map_or(activity, |seen| {
+                    if announced || seen.raw_activity == session.last_activity_at {
+                        seen.watermark.min(now)
+                    } else {
+                        seen.watermark.max(activity).min(now)
+                    }
+                });
+                current.insert(
+                    key.clone(),
+                    Observed {
+                        status: session.status,
+                        raw_activity: session.last_activity_at,
+                        watermark,
+                    },
+                );
                 if enabled
                     && changed
+                    && !announced
                     && matches!(
                         session.status,
                         Status::Waiting | Status::Done | Status::Error
                     )
                 {
+                    self.announced.entry(key).or_default().push(event);
                     changed_count += 1;
                     if changed_count > 5 {
                         continue;

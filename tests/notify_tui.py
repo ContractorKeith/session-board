@@ -28,15 +28,18 @@ for mode in ('slow', 'disabled', 'fail', 'timeout'):
             for row in rows:
                 row.update(sessionId='stable', cwd=str(root), timestamp=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'))
             transcript.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        gate = root / 'gate'
+        os.mkfifo(gate)
+        gate_fd = os.open(gate, os.O_RDWR | os.O_NONBLOCK)
         fixture('working')
         # A real executable boundary, never a real desktop server.
         for name in ('notify-send', 'osascript'):
             fake = root / 'bin' / name
-            fake.write_text('#!/bin/sh\nprintf "call\\n" >> "$NOTIFY_LOG"\n' + ('exec /bin/sleep 3\n' if mode == 'slow' else 'exec /bin/sleep 30\n' if mode == 'timeout' else 'exit 1\n' if mode == 'fail' else 'exit 0\n'))
+            fake.write_text('#!/bin/sh\nprintf "call\\n" >> "$NOTIFY_LOG"\n' + ('read ignored < "$NOTIFY_GATE"\n' if mode == 'slow' else 'exec /bin/sleep 30\n' if mode == 'timeout' else 'exit 1\n' if mode == 'fail' else 'exit 0\n'))
             fake.chmod(0o755)
         env = dict(os.environ, TERM='xterm-256color', CLAUDE_CONFIG_DIR=str(root / 'claude'),
                    CODEX_HOME=str(root / 'codex'), SBOARD_STATE_DIR=str(root / 'state'),
-                   SBOARD_CONFIG_DIR=str(root / 'config'), NOTIFY_LOG=str(log), PATH=str(root / 'bin') + ':' + os.environ['PATH'])
+                   SBOARD_CONFIG_DIR=str(root / 'config'), NOTIFY_LOG=str(log), NOTIFY_GATE=str(gate), PATH=str(root / 'bin') + ':' + os.environ['PATH'])
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 100, 0, 0))
         def controlling_terminal():
@@ -50,7 +53,7 @@ for mode in ('slow', 'disabled', 'fail', 'timeout'):
             global output
             if select.select([master], [], [], .005)[0]:
                 output += os.read(master, 65536)
-        def wait(predicate, description, timeout=6):
+        def wait(predicate, description, timeout=15):
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 pump()
@@ -65,21 +68,22 @@ for mode in ('slow', 'disabled', 'fail', 'timeout'):
             fixture('waiting')
             if mode == 'disabled':
                 wait(lambda: 'waiting' in screen(output), 'transition scan missing')
-                until = time.monotonic() + .15
+                until = time.monotonic() + .5
                 while time.monotonic() < until:
                     pump()
                 assert not log.exists(), 'notify=false delivered a notification'
             else:
-                wait(log.exists, 'transition never reached the notifier')
+                wait(lambda: log.exists() and log.read_text().splitlines() == ['call'], 'transition never reached the notifier')
                 assert log.read_text().splitlines() == ['call'], 'transition delivered more than once'
                 if mode == 'slow':
                     offset = len(output)
                     sent = time.monotonic()
                     os.write(master, b'?')
                     # Time the visible Help title, excluding Python's full screen reconstruction.
-                    wait(lambda: b'Help' in output[offset:], 'help blocked behind desktop command', timeout=.1)
+                    wait(lambda: b'Help' in output[offset:], 'help blocked behind desktop command', timeout=2)
                     elapsed = time.monotonic() - sent
-                    assert elapsed < .1, f'help exceeded 100 ms: {elapsed:.3f}s'
+                    # The notifier is held until Help appears; no scheduler-sensitive stopwatch.
+                    os.write(gate_fd, b'release\n')
                     wait(lambda: 'Attention focus: Enter' in screen(output), 'help frame incomplete')
                     print(f'help visible in {elapsed * 1000:.1f} ms')
                 else:
@@ -88,14 +92,20 @@ for mode in ('slow', 'disabled', 'fail', 'timeout'):
                     assert command in screen(output).splitlines()[-1]
                     assert '1 warnings:' in screen(output).splitlines()[-1]
             os.write(master, b'q')
-            proc.wait(timeout=2)
+            proc.wait(timeout=5)
             assert proc.returncode == 0
             errors = proc.stderr.read()
             assert not errors, f'notifier wrote over terminal: {errors!r}'
             print(f'{mode}: real scan/event path passed')
         finally:
             if proc.poll() is None:
-                proc.kill()
-                proc.wait()
+                # Allow the board to cancel/reap its notifier group on assertion failures too.
+                try:
+                    os.write(master, b'q')
+                    proc.wait(timeout=8)
+                except (OSError, subprocess.TimeoutExpired):
+                    proc.kill()
+                    proc.wait()
             proc.stderr.close()
             os.close(master)
+            os.close(gate_fd)

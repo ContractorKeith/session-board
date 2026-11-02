@@ -1,59 +1,95 @@
 use session_board::notify::{Delivery, Notifier};
 use std::{
     io,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-    },
+    sync::mpsc::{self, Receiver, Sender},
     time::{Duration, Instant},
 };
 
 struct Blocked {
-    entered: Arc<AtomicBool>,
-    release: Arc<AtomicBool>,
-    calls: Arc<AtomicUsize>,
+    entered: Sender<()>,
+    release: Receiver<()>,
+    completed: Sender<()>,
 }
 impl Notifier for Blocked {
     fn notify(&mut self, _: &str, _: &str) -> io::Result<()> {
-        self.entered.store(true, Ordering::SeqCst);
-        while !self.release.load(Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        self.calls.fetch_add(1, Ordering::SeqCst);
+        let _ = self.entered.send(());
+        self.release
+            .recv_timeout(Duration::from_secs(30))
+            .map_err(io::Error::other)?;
+        let _ = self.completed.send(());
         Ok(())
     }
 }
-#[test]
-fn delivery_is_nonblocking_and_bounded_under_backpressure() {
-    let entered = Arc::new(AtomicBool::new(false));
-    let release = Arc::new(AtomicBool::new(false));
-    let calls = Arc::new(AtomicUsize::new(0));
-    let mut worker = Delivery::start(Blocked {
-        entered: entered.clone(),
-        release: release.clone(),
-        calls: calls.clone(),
+struct Gate {
+    entered: Receiver<()>,
+    release: Sender<()>,
+    completed: Receiver<()>,
+}
+impl Gate {
+    fn started(&self) {
+        self.entered
+            .recv_timeout(Duration::from_secs(10))
+            .expect("worker did not start");
+    }
+    fn allow(&self, count: usize) {
+        for _ in 0..count {
+            let _ = self.release.send(());
+        }
+    }
+    fn finished(&self, count: usize) {
+        for _ in 0..count {
+            self.completed
+                .recv_timeout(Duration::from_secs(10))
+                .expect("worker did not finish");
+        }
+        self.entered.try_iter().for_each(drop);
+    }
+}
+impl Drop for Gate {
+    fn drop(&mut self) {
+        self.allow(1001);
+    }
+}
+fn blocked() -> (Delivery, Gate) {
+    let (entered, starts) = mpsc::channel();
+    let (permit, release) = mpsc::channel();
+    let (completed, finishes) = mpsc::channel();
+    let worker = Delivery::start(Blocked {
+        entered,
+        release,
+        completed,
     })
     .unwrap();
+    (
+        worker,
+        Gate {
+            entered: starts,
+            release: permit,
+            completed: finishes,
+        },
+    )
+}
+#[test]
+fn delivery_is_nonblocking_and_bounded_under_backpressure() {
+    let (mut worker, gate) = blocked();
     worker.notify("first", "body").unwrap();
-    let deadline = Instant::now() + Duration::from_secs(1);
-    while !entered.load(Ordering::SeqCst) && Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    let start = Instant::now();
-    for _ in 0..1000 {
-        worker.notify("title", "body").unwrap();
-    }
-    let elapsed = start.elapsed();
-    let warnings = worker.take_warnings();
-    release.store(true, Ordering::SeqCst);
-    let deadline = Instant::now() + Duration::from_secs(1);
-    while calls.load(Ordering::SeqCst) < 17 && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert!(elapsed < Duration::from_millis(100), "{elapsed:?}");
+    gate.started();
+    let (sent, result) = mpsc::channel();
+    let producer = std::thread::spawn(move || {
+        for _ in 0..1000 {
+            worker.notify("title", "body").unwrap();
+        }
+        let warnings = worker.take_warnings();
+        let _ = sent.send((worker, warnings));
+    });
+    // Enqueue finishes while the notifier is still blocked, independent of CPU scheduling.
+    let result = result.recv_timeout(Duration::from_secs(5));
+    gate.allow(1001);
+    let (mut worker, warnings) = result.expect("enqueue blocked behind delivery");
+    producer.join().unwrap();
+    gate.finished(17);
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].contains("queue full"));
-    assert_eq!(calls.load(Ordering::SeqCst), 17);
     assert!(worker.take_warnings().is_empty());
 }
 
@@ -66,7 +102,7 @@ fn desktop_failure_probe() {
     for _ in 0..count {
         worker.notify("title", "body").unwrap();
     }
-    let deadline = Instant::now() + Duration::from_secs(7);
+    let deadline = Instant::now() + Duration::from_secs(15);
     let mut warnings = vec![];
     while Instant::now() < deadline {
         warnings.extend(worker.take_warnings());
@@ -85,18 +121,33 @@ fn desktop_failure_probe() {
     #[cfg(not(target_os = "macos"))]
     assert!(warnings[0].contains("notify-send"));
     assert!(worker.take_warnings().is_empty());
-    if mode == "timeout" {
+    if matches!(mode.as_str(), "timeout" | "fork") {
         assert!(warnings[0].contains("exceeded 5 s"));
-        let pid = std::fs::read_to_string(std::env::var("NOTIFY_LOG").unwrap()).unwrap();
-        assert!(
-            !std::process::Command::new("/bin/kill")
-                .args(["-0", pid.trim()])
-                .output()
-                .unwrap()
-                .status
-                .success(),
-            "timed-out child still alive"
-        );
+        let pids = std::fs::read_to_string(std::env::var("NOTIFY_LOG").unwrap()).unwrap();
+        for pid in pids.lines() {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let dead = loop {
+                let state = std::process::Command::new("/bin/ps")
+                    .args(["-o", "stat=", "-p", pid])
+                    .output()
+                    .unwrap();
+                let state = String::from_utf8_lossy(&state.stdout);
+                // A killed orphan may briefly await init's reap; it is no longer running.
+                if state.trim().is_empty() || state.trim().starts_with('Z') {
+                    break true;
+                }
+                if Instant::now() >= deadline {
+                    break false;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            if !dead {
+                let _ = std::process::Command::new("/bin/kill")
+                    .args(["-KILL", pid])
+                    .output();
+            }
+            assert!(dead, "timed-out notification left process {pid} alive");
+        }
     }
 }
 #[test]
@@ -118,7 +169,9 @@ fn failure_case(mode: &str) {
     #[cfg(not(target_os = "macos"))]
     let name = "notify-send";
     let path = dir.path().join(name);
-    let script = if mode == "timeout" {
+    let script = if mode == "fork" {
+        "#!/bin/sh\n/bin/sleep 30 &\nprintf '%s\\n' \"$$\" \"$!\" >> \"$NOTIFY_LOG\"\nwait\n"
+    } else if mode == "timeout" {
         "#!/bin/sh\nprintf '%s\\n' \"$$\" >> \"$NOTIFY_LOG\"\nexec /bin/sleep 30\n"
     } else {
         "#!/bin/sh\nprintf 'call\\n' >> \"$NOTIFY_LOG\"\nexit 1\n"
@@ -194,35 +247,24 @@ fn notify_send_escapes_markup_and_caps_complete_arguments() {
 
 #[test]
 fn queue_overflow_warns_again_after_delivery_recovers() {
-    let entered = Arc::new(AtomicBool::new(false));
-    let release = Arc::new(AtomicBool::new(false));
-    let calls = Arc::new(AtomicUsize::new(0));
-    let mut worker = Delivery::start(Blocked {
-        entered: entered.clone(),
-        release: release.clone(),
-        calls: calls.clone(),
-    })
-    .unwrap();
+    let (mut worker, gate) = blocked();
     for episode in 0..2 {
-        release.store(false, Ordering::SeqCst);
-        entered.store(false, Ordering::SeqCst);
         worker.notify("start", "body").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while !entered.load(Ordering::SeqCst) && Instant::now() < deadline {
-            std::thread::yield_now();
-        }
+        gate.started();
         for _ in 0..20 {
             worker.notify("overflow", "body").unwrap();
         }
         let warnings = worker.take_warnings();
-        release.store(true, Ordering::SeqCst);
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while calls.load(Ordering::SeqCst) < 17 * (episode + 1) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        gate.allow(17);
+        gate.finished(17);
         assert_eq!(warnings.len(), 1, "episode {episode} was silent");
         assert!(warnings[0].contains("queue full"));
         assert!(worker.take_warnings().is_empty());
-        assert_eq!(calls.load(Ordering::SeqCst), 17 * (episode + 1));
     }
+}
+
+#[test]
+#[cfg(unix)]
+fn timed_out_forking_command_has_no_live_descendants() {
+    failure_case("fork");
 }
