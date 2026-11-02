@@ -155,6 +155,19 @@ fn no_color_and_palette_statuses() {
             .any(|cell| cell.fg != ratatui::style::Color::Reset)
     );
 }
+// FSEvents can deliver a coalesced batch after the first debounce window.
+fn drain_requests(requests: &std::sync::mpsc::Receiver<()>) -> usize {
+    let deadline = Instant::now() + watch::DEBOUNCE + Duration::from_secs(1);
+    let mut count = 0;
+    while requests
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .is_ok()
+    {
+        count += 1;
+    }
+    count
+}
+
 #[test]
 fn recursive_watcher_debounces_single_and_burst_changes() {
     for burst in [false, true] {
@@ -172,7 +185,12 @@ fn recursive_watcher_debounces_single_and_burst_changes() {
             .recv_timeout(Duration::from_secs(3) - started.elapsed())
             .unwrap();
         assert!(started.elapsed() >= watch::DEBOUNCE);
-        assert!(requests.recv_timeout(Duration::from_millis(300)).is_err());
+        let count = 1 + drain_requests(&requests);
+        if burst {
+            assert!((1..=2).contains(&count), "burst produced {count} requests");
+        } else {
+            assert_eq!(count, 1, "isolated touch must yield exactly one request");
+        }
     }
 }
 
@@ -425,12 +443,24 @@ fn burst_coalesces_and_recreated_root_reattaches() {
     #[cfg(not(unix))]
     let watched = root.clone();
     let (_watcher, requests) = watch::StoreWatcher::new(std::slice::from_ref(&watched)).unwrap();
+    // Keep one file open so all 200 real writes finish within one second.
+    use std::io::Write;
+    let started = Instant::now();
+    let mut file = fs::File::create(root.join("session.jsonl")).unwrap();
     for n in 0..200 {
-        fs::write(root.join("session.jsonl"), n.to_string()).unwrap();
-        std::thread::sleep(Duration::from_millis(5));
+        writeln!(file, "{n}").unwrap();
     }
+    drop(file);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "producer exceeded the one-second burst budget"
+    );
     requests.recv_timeout(Duration::from_secs(3)).unwrap();
-    assert!(requests.recv_timeout(Duration::from_millis(500)).is_err());
+    let count = 1 + drain_requests(&requests);
+    assert!(
+        (1..=2).contains(&count),
+        "200-write burst produced {count} requests"
+    );
     fs::remove_dir_all(&root).unwrap();
     // Let the backend deliver root removal before recreating it.
     std::thread::sleep(Duration::from_millis(200));
