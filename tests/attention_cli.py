@@ -23,10 +23,12 @@ with tempfile.TemporaryDirectory() as scratch:
                 row.update(sessionId=session['id'], cwd=str(cwd), timestamp=(now - timedelta(seconds=age)).isoformat().replace('+00:00', 'Z'))
             (store / (session['id'] + '.jsonl')).write_text(''.join(json.dumps(row) + '\n' for row in records))
     (root / 'codex/sessions').mkdir(parents=True)
-    env = dict(os.environ, CLAUDE_CONFIG_DIR=str(root / 'claude'), CODEX_HOME=str(root / 'codex'),
+    env = dict(os.environ, HOME=str(root), CLAUDE_CONFIG_DIR=str(root / 'claude'), CODEX_HOME=str(root / 'codex'),
                SBOARD_STATE_DIR=str(root / 'state'), SBOARD_CONFIG_DIR=str(root / 'config'))
     (root / 'state').mkdir()
     (root / 'state/state.toml').write_text('first_seen = 0\n')
+    for key in ('GROK_HOME', 'OPENCODE_DB', 'XDG_DATA_HOME'):
+        env.pop(key, None)
     command = [str(Path(sys.argv[1]).resolve()), 'list', '--status', 'attention']
     result = subprocess.run(command + ['--json'], env=env, capture_output=True, check=True)
     sessions = json.loads(result.stdout)
