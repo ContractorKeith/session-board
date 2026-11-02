@@ -188,6 +188,8 @@ impl Scans {
             cancelled,
             move |first| {
                 if panic_once && first {
+                    // Exercise a panic after the first frame, while input remains live.
+                    thread::sleep(Duration::from_millis(100));
                     panic!("scan probe");
                 }
                 pipeline::run(&mut roots, &Options::default()).map(|outcome| outcome.scan)

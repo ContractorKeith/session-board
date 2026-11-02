@@ -38,7 +38,9 @@ def screen(data):
             continue
         for char in chunk:
             if char == '\r': col = 0
-            elif char == '\n': row = min(29, row + 1)
+            elif char == '\n':
+                if row == 29: grid.pop(0); grid.append([' '] * 100)
+                else: row += 1
             elif char.isprintable() and not unicodedata.combining(char):
                 if 0 <= row < 30 and 0 <= col < 100: grid[row][col] = char
                 col += 2 if unicodedata.east_asian_width(char) in ('W', 'F') else 1
@@ -106,6 +108,7 @@ def case(mode):
             pid = int(pidfile.read_text())
             if mode == 'scan-panic':
                 wait_for(lambda: 'scan: panicked' in screen(output), 'worker panic was hidden or deadlocked')
+                assert 'Projects' in screen(output) and '? help' in screen(output)
                 assert b'\x1b[?1049l' not in output, 'worker panic restored the live terminal'
                 os.write(master, b'r')
                 wait_for(lambda: '1 projects' in screen(output), 'scan did not recover on r')

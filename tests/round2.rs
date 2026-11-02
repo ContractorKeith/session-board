@@ -872,7 +872,7 @@ fn round4_git_fifo_probe() {
     let repo = std::path::PathBuf::from(std::env::var_os("SBOARD_TEST_FIFO_REPO").unwrap());
     let started = std::time::Instant::now();
     let mut roots = session_board::project::ProjectRoots::default();
-    assert_eq!(roots.resolve(&repo), repo);
+    assert_eq!(roots.resolve(&repo), fs::canonicalize(&repo).unwrap());
     assert!(started.elapsed() < std::time::Duration::from_secs(3));
     assert!(
         roots

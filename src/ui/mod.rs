@@ -312,6 +312,9 @@ fn event_loop(
                     app.replace(result.projects);
                 }
                 Err(error) => {
+                    // The forwarded panic hook may have scrolled stderr through the frame.
+                    // Reset the fullscreen buffers without querying the cursor position.
+                    terminal.resize(terminal.size()?.into())?;
                     app.scan_warnings.clear();
                     app.message = format!("scan: {error}");
                 }
