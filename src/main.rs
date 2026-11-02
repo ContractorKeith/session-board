@@ -72,7 +72,11 @@ fn run(cli: Cli) -> io::Result<i32> {
                 cli::warn(warning);
             }
             let mut out = io::stdout().lock();
-            cli::list(&mut out, &outcome.scan.projects, json)?;
+            if json && matches!(status, Some(cli::StatusFilter::Attention)) {
+                cli::attention_json(&mut out, &outcome.scan.projects)?;
+            } else {
+                cli::list(&mut out, &outcome.scan.projects, json)?;
+            }
             out.flush()?;
             Ok(outcome.exit_code)
         }

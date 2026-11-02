@@ -31,11 +31,19 @@ fn attention_matches_cli_fixture_order_and_read_marks() {
             }
         }
     }
-    let expected: Vec<_> = attention(&projects, &state)
-        .iter()
-        .map(|i| i.session.id.clone())
-        .collect();
-    assert!(!expected.is_empty());
+    let expected = [
+        "claude_code:waiting",
+        "claude_code:error",
+        "claude_code:stuck",
+    ]
+    .map(str::to_owned);
+    assert_eq!(
+        attention(&projects, &state)
+            .iter()
+            .map(|i| i.session.id.clone())
+            .collect::<Vec<_>>(),
+        expected
+    );
     let mut filtered = projects.clone();
     cli::filter(
         &mut filtered,
@@ -106,11 +114,20 @@ fn command_probe() {
     session_board::notify::Osascript
         .notify(title, body)
         .unwrap();
-    let mut desktop = session_board::notify::Desktop::default();
+    let mut desktop = session_board::notify::Delivery::desktop().unwrap();
     // Missing command falls back to Noop and warns once.
     std::fs::remove_file(std::env::var_os("PROBE_REMOVE").unwrap()).unwrap();
     desktop.notify(title, body).unwrap();
     desktop.notify(title, body).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut warnings = vec![];
+    while warnings.is_empty() && std::time::Instant::now() < deadline {
+        warnings.extend(desktop.take_warnings());
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("desktop notification:"));
+    drop(desktop);
 }
 #[test]
 #[cfg(unix)]
@@ -143,16 +160,17 @@ fn fixed_commands_preserve_arguments_and_missing_command_warns_once() {
         "{}",
         String::from_utf8_lossy(&output.stdout)
     );
-    assert_eq!(
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
         String::from_utf8_lossy(&output.stderr)
-            .matches("desktop notification:")
-            .count(),
-        1
     );
     let actual = std::fs::read_to_string(log).unwrap();
-    assert!(actual.contains(
-        "--app-name\nsboard\n--\ntitle \"quoted\"; $(touch BAD)\nbody\nsecond line \\\n"
-    ));
+    assert!(
+        actual.contains(
+            "--app-name\nsboard\n--\ntitle \"quoted\"; $(touch BAD)\nbody second line \\\n"
+        )
+    );
     assert!(actual.contains("on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run\n--\ntitle"));
 }
 
@@ -196,4 +214,133 @@ fn sessions_sharing_a_store_path_keep_independent_membership() {
     );
     assert_eq!(projects[0].sessions.len(), 1);
     assert_eq!(projects[0].sessions[0].id, "opencode:waiting");
+}
+
+#[test]
+fn old_first_seen_same_status_activity_and_duplicate_ids() {
+    let mut p = projects(std::path::Path::new("fixtures/claude_code"));
+    let mut s = p[0].sessions[0].clone();
+    s.status = session_board::model::Status::Waiting;
+    s.last_activity_at = NOW - 3 * 86400;
+    p[0].sessions = vec![s.clone()];
+    let mut tracker = Transitions::default();
+    let mut record = Recording::default();
+    tracker.scan(&[], true, &mut record);
+    tracker.scan(&p, true, &mut record);
+    assert!(
+        record.calls.is_empty(),
+        "old sessions first seen after startup must stay silent"
+    );
+    p[0].sessions[0].status = session_board::model::Status::Done;
+    tracker.scan(&p, true, &mut record);
+    record.calls.clear();
+    p[0].sessions[0].last_activity_at += 1;
+    tracker.scan(&p, true, &mut record);
+    assert_eq!(record.calls.len(), 1, "new done turn must notify");
+    let mut duplicate = s.clone();
+    duplicate.transcript_path = "other-copy.jsonl".into();
+    duplicate.status = session_board::model::Status::Error;
+    p[0].sessions = vec![s, duplicate];
+    let mut tracker = Transitions::default();
+    record.calls.clear();
+    tracker.scan(&p, true, &mut record);
+    tracker.scan(&p, true, &mut record);
+    assert!(
+        record.calls.is_empty(),
+        "unchanged copies sharing an id must not notify"
+    );
+}
+
+#[test]
+fn global_attention_order_is_independent_of_project_grouping() {
+    let p: Vec<session_board::model::Project> =
+        serde_json::from_str(include_str!("fixtures/attention-projects.json")).unwrap();
+    let expected = ["b-wait", "g-wait", "a-wait", "g-error", "b-error", "a-done"];
+    let actual: Vec<_> = attention(&p, &State::default())
+        .iter()
+        .map(|i| i.session.id.as_str())
+        .collect();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn burst_of_300_transitions_sends_one_summary() {
+    let mut p = projects(std::path::Path::new("fixtures/claude_code"));
+    let sample = p[0].sessions[0].clone();
+    p[0].sessions = (0..300)
+        .map(|n| {
+            let mut s = sample.clone();
+            s.id = format!("burst:{n}");
+            s.transcript_path = format!("burst-{n}").into();
+            s.status = session_board::model::Status::Working;
+            s
+        })
+        .collect();
+    let mut tracker = Transitions::default();
+    let mut record = Recording::default();
+    tracker.scan(&p, true, &mut record);
+    for s in &mut p[0].sessions {
+        s.status = session_board::model::Status::Waiting;
+    }
+    tracker.scan(&p, true, &mut record);
+    assert_eq!(record.calls.len(), 1);
+    assert_eq!(record.calls[0].0, "sboard: 300 sessions need you");
+}
+
+#[test]
+fn notification_titles_sanitise_project_names_and_limit_text() {
+    let mut p = projects(std::path::Path::new("fixtures/claude_code"));
+    p[0].sessions.truncate(1);
+    p[0].name = "bad\n\u{1b}[31mproject\u{1b}[0m".into();
+    p[0].sessions[0].status = session_board::model::Status::Working;
+    let mut tracker = Transitions::default();
+    let mut record = Recording::default();
+    tracker.scan(&p, true, &mut record);
+    p[0].sessions[0].status = session_board::model::Status::Waiting;
+    tracker.scan(&p, true, &mut record);
+    assert_eq!(record.calls[0].0, "sboard: bad project — waiting");
+    p[0].name = "界".repeat(300);
+    p[0].sessions[0].title = "😀".repeat(300);
+    p[0].sessions[0].status = session_board::model::Status::Done;
+    tracker.scan(&p, true, &mut record);
+    assert_eq!(record.calls[1].0.chars().count(), 200);
+    assert_eq!(record.calls[1].1.chars().count(), 200);
+}
+
+#[test]
+fn attention_cli_json_is_global_while_text_keeps_project_groups() {
+    let output = std::process::Command::new("python3")
+        .args(["tests/attention_cli.py", env!("CARGO_BIN_EXE_sboard")])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn first_seen_recent_and_same_status_waiting_activity() {
+    let mut p = projects(std::path::Path::new("fixtures/claude_code"));
+    p[0].sessions.truncate(1);
+    let s = &mut p[0].sessions[0];
+    s.status = session_board::model::Status::Waiting;
+    s.last_activity_at = NOW + 1;
+    let mut tracker = Transitions::default();
+    let mut record = Recording::default();
+    tracker.scan_at(&[], true, &mut record, NOW);
+    tracker.scan_at(&p, true, &mut record, NOW + 2);
+    assert_eq!(record.calls.len(), 1);
+    p[0].sessions[0].last_activity_at = NOW + 3;
+    tracker.scan_at(&p, true, &mut record, NOW + 4);
+    assert_eq!(record.calls.len(), 2);
+    tracker.scan_at(&[], true, &mut record, NOW + 5);
+    tracker.scan_at(&p, true, &mut record, NOW + 6);
+    assert_eq!(
+        record.calls.len(),
+        2,
+        "reappearing old transcript must stay silent"
+    );
 }

@@ -565,16 +565,30 @@ fn attention_focus_collapse_empty_and_cli_order() {
         None,
         false,
     );
+    let expected = [
+        "claude_code:waiting",
+        "codex:waiting",
+        "claude_code:error",
+        "codex:error",
+        "claude_code:stuck",
+        "codex:stuck",
+        "claude_code:done",
+        "codex:done",
+    ];
     assert_eq!(
         app.attention_items()
             .iter()
-            .map(|i| &i.session.id)
+            .map(|i| i.session.id.as_str())
             .collect::<Vec<_>>(),
+        expected
+    );
+    assert_eq!(
         cli_projects
             .iter()
             .flat_map(|p| &p.sessions)
-            .map(|s| &s.id)
-            .collect::<Vec<_>>()
+            .map(|s| s.id.as_str())
+            .collect::<Vec<_>>(),
+        expected
     );
     key(&mut app, KeyCode::Tab);
     assert!(app.attention_focus);
@@ -607,7 +621,7 @@ fn attention_overflow_is_bounded_and_navigable() {
         })
         .collect();
     let rendered = frame(&app, 100, 30);
-    assert!(rendered.contains("+13 more"));
+    assert!(rendered.contains("+13 below"));
     assert!(rendered.contains("20 need you"));
     assert!(rendered.lines().nth(10).unwrap().contains("Projects"));
     key(&mut app, KeyCode::Tab);
@@ -615,7 +629,9 @@ fn attention_overflow_is_bounded_and_navigable() {
         key(&mut app, KeyCode::Down);
     }
     assert_eq!(app.session().unwrap().id, "sample:19");
-    frame(&app, 100, 30);
+    let output = frame(&app, 100, 30);
+    assert!(output.contains("+13 above"));
+    assert!(!output.contains("below"));
 }
 
 #[test]
@@ -654,4 +670,157 @@ fn pty_screen_parser_handles_partial_escape_sequences() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn multi_project_app() -> App {
+    let mut app = App::new(false);
+    app.replace(serde_json::from_str(include_str!("fixtures/attention-projects.json")).unwrap());
+    app
+}
+fn pane_highlight(app: &App) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal.draw(|f| app.render(f, NOW)).unwrap();
+    let b = terminal.backend().buffer();
+    (0..10)
+        .find(|y| {
+            (0..100).any(|x| {
+                b[(x, *y)]
+                    .modifier
+                    .contains(ratatui::style::Modifier::REVERSED)
+            })
+        })
+        .map(|y| (0..100).map(|x| b[(x, y)].symbol()).collect())
+        .unwrap_or_default()
+}
+#[test]
+fn focused_rescan_keeps_highlight_tree_enter_and_next_neighbour_together() {
+    let mut app = multi_project_app();
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Down);
+    let target = app.session().unwrap().clone();
+    let removed = app.attention_items()[2].session.transcript_path.clone();
+    let mut p = app.projects.clone();
+    for project in &mut p {
+        project.sessions.retain(|s| s.transcript_path != removed);
+    }
+    let mut new = target.clone();
+    new.id = "new-top".into();
+    new.title = "new-top".into();
+    new.transcript_path = "new-top".into();
+    new.last_activity_at = 99999;
+    p[0].sessions.push(new);
+    app.replace(p);
+    assert_eq!(
+        app.session().unwrap().transcript_path,
+        target.transcript_path
+    );
+    assert!(pane_highlight(&app).contains(&target.title));
+    assert_eq!(
+        app.rows()[app.selected],
+        ui::Row::Session(target.transcript_path.clone())
+    );
+    assert_eq!(key(&mut app, KeyCode::Enter), Action::Open);
+    assert_eq!(
+        app.session().unwrap().transcript_path,
+        target.transcript_path
+    );
+    let path = app
+        .attention_items()
+        .iter()
+        .skip_while(|i| i.session.transcript_path != target.transcript_path)
+        .nth(1)
+        .unwrap()
+        .session
+        .transcript_path
+        .clone();
+    key(&mut app, KeyCode::Down);
+    assert_eq!(app.session().unwrap().transcript_path, path);
+    assert!(pane_highlight(&app).contains(&app.session().unwrap().title));
+}
+#[test]
+fn small_pane_collapsed_movement_and_folds() {
+    let mut app = fixture_app();
+    let root = app.projects[0].root.clone();
+    app.folded.insert(root.clone());
+    key(&mut app, KeyCode::Tab);
+    assert!(
+        app.folded.contains(&root),
+        "focusing attention must not unfold the tree"
+    );
+    key(&mut app, KeyCode::Down);
+    assert!(app.folded.contains(&root));
+    key(&mut app, KeyCode::Left);
+    let selected = app.selected;
+    let path = app.session().map(|s| s.transcript_path.clone());
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Up);
+    assert_eq!(app.selected, selected);
+    assert_eq!(app.session().map(|s| s.transcript_path.clone()), path);
+    key(&mut app, KeyCode::Right);
+    let small = frame(&app, 80, 12);
+    assert!(
+        small.lines().nth(4).unwrap().contains("Projects"),
+        "{small}"
+    );
+    key(&mut app, KeyCode::Enter);
+    assert!(!app.folded.contains(&root));
+    assert_eq!(app.session().unwrap().id, "codex:waiting");
+    assert_eq!(
+        app.rows()[app.selected],
+        ui::Row::Session(app.session().unwrap().transcript_path.clone())
+    );
+}
+
+#[test]
+fn tui_notifications_use_real_scan_events_and_config_without_blocking_help() {
+    let output = std::process::Command::new("python3")
+        .args(["tests/notify_tui.py", env!("CARGO_BIN_EXE_sboard")])
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn pane_has_handwritten_global_order_and_clean_project_names() {
+    let mut app = multi_project_app();
+    assert_eq!(
+        app.attention_items()
+            .iter()
+            .map(|i| i.session.id.as_str())
+            .collect::<Vec<_>>(),
+        ["b-wait", "g-wait", "a-wait", "g-error", "b-error", "a-done"]
+    );
+    app.projects[0].name = "bad\n\u{1b}[31mproject\u{1b}[0m".into();
+    let output = frame(&app, 100, 30);
+    let pane = output.lines().take(8).collect::<Vec<_>>().join("\n");
+    assert!(pane.contains("bad project"), "{output}");
+    assert!(!pane.contains("31m"));
+}
+
+#[test]
+fn focused_queue_shrink_clamps_the_view_and_target() {
+    let mut app = multi_project_app();
+    key(&mut app, KeyCode::Tab);
+    for _ in 0..20 {
+        key(&mut app, KeyCode::Down);
+    }
+    let mut p = app.projects.clone();
+    for project in &mut p {
+        project.sessions.retain(|s| s.id == "b-wait");
+    }
+    app.replace(p);
+    assert_eq!(app.session().unwrap().id, "b-wait");
+    assert!(pane_highlight(&app).contains("b-wait"));
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.session().unwrap().id, "b-wait");
+    assert_eq!(app.message, "open lands in M3");
+    app.replace(vec![]);
+    assert!(!app.attention_focus);
+    assert!(app.attention_path.is_none());
 }

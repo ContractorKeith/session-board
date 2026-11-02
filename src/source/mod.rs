@@ -5,6 +5,7 @@ use crate::{
     config::Config,
     model::{Agent, Session},
 };
+pub use read::title;
 
 /// Sources report malformed lines and missing stores without failing a scan.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

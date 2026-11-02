@@ -304,6 +304,14 @@ pub fn filter(
     });
 }
 
+/// Attention filtering already removed read done sessions; keep JSON flat across projects.
+pub fn attention_json(out: &mut impl Write, projects: &[crate::model::Project]) -> io::Result<()> {
+    let state = crate::state::State::default();
+    let items = crate::attention::attention(projects, &state);
+    let sessions: Vec<_> = items.iter().map(|item| item.session).collect();
+    writeln!(out, "{}", serde_json::to_string_pretty(&sessions)?)
+}
+
 /// Shared renderer for the cold scan and its fixed-clock fixture golden.
 pub fn list(
     out: &mut impl Write,
