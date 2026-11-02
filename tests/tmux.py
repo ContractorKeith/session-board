@@ -125,6 +125,7 @@ def case(mode):
                 shim.write_text("""#!/bin/sh
 socket="$2"
 shift 2
+printf '%s\\n' "$@" >> "$PANES.calls"
 if [ "$1" = list-panes ]; then cat "$PANES"; exit; fi
 if [ "$1" = display ] && [ "$3" = -t ] && [ "$RACE" = 1 ] && [ ! -e "$RACE_MARK" ]; then
     "$REAL_TMUX" -S "$socket" "$@"
@@ -136,9 +137,8 @@ fi
 exec "$REAL_TMUX" -S "$socket" "$@"
 """)
                 shim.chmod(0o755)
-                for key, value in dict(REAL_TMUX=TMUX, PANES=str(root / 'panes'), TARGET=target,
-                                       RACE='1' if mode == 'jump-race' else '0', RACE_MARK=str(root / 'raced')).items():
-                    run_tmux('set-environment', '-g', key, value)
+                shim_env = dict(REAL_TMUX=TMUX, PANES=str(root / 'panes'), TARGET=target,
+                                RACE='1' if mode == 'jump-race' else '0', RACE_MARK=str(root / 'raced'))
                 client, master = pty.fork()
                 if client == 0:
                     os.execvpe(TMUX, tmux + ['attach', '-t', '=test'], env)
@@ -147,7 +147,9 @@ exec "$REAL_TMUX" -S "$socket" "$@"
                     return bool(run_tmux('list-clients', '-F', '#{client_session}').stdout.strip())
                 wait_for(connected, 'private client did not attach')
                 wrapper = root / 'open'
-                wrapper.write_text('#!/bin/sh\n' + shlex.join([BINARY, 'open', 'claude_code:done']) +
+                # Supply the shim inputs in the command, independent of tmux's session environment.
+                invocation = ['env', 'PATH=' + env['PATH']] + [key + '=' + value for key, value in shim_env.items()]
+                wrapper.write_text('#!/bin/sh\n' + shlex.join(invocation + [BINARY, 'open', 'claude_code:done']) +
                     '\nresult=$?\nprintf "%s\\n" "$result" > ' + shlex.quote(str(root / 'exit.tmp')) + '\nmv ' + shlex.quote(str(root / 'exit.tmp')) + ' ' + shlex.quote(str(root / 'exit')) + '\nsleep 60\n')
                 wrapper.chmod(0o755)
                 run_tmux('new-window', '-t', '=test', '-c', str(root), str(wrapper))
@@ -163,7 +165,9 @@ exec "$REAL_TMUX" -S "$socket" "$@"
                         raise AssertionError(f'{error}; clients={clients!r}; resume argv={resumed!r}') from error
                     assert not (root / 'args').exists(), 'literal hash target resumed instead of jumping'
                 else:
-                    assert (root / 'raced').exists(), 'shim never removed the target'
+                    assert (root / 'raced').exists(), ('shim never removed the target; calls=' +
+                        ((root / 'panes.calls').read_text() if (root / 'panes.calls').exists() else '<none>') +
+                        '; resume=' + repr((root / 'args').read_bytes() if (root / 'args').exists() else None))
                     assert (root / 'args').read_text() == '--resume=done\n', 'jump failure did not resume'
             elif mode == 'injection':
                 env['TMUX'] = tmux_env
