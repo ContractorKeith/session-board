@@ -319,7 +319,7 @@ fn empty_stores_list_and_cli_contract() {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8(output.stdout).unwrap().trim(),
-        env!("CARGO_PKG_VERSION")
+        format!("sboard {}", env!("CARGO_PKG_VERSION"))
     );
     let output = command(temp.path()).arg("--help").output().unwrap();
     assert!(output.status.success());

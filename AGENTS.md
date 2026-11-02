@@ -9,9 +9,9 @@ MIT. "Done" for v1 is every row marked v1 in `docs/PLAN.md` §4 passing the acce
 §10 on Omarchy, the Mac Studio and GitHub Actions.
 
 ## Status
-M6 in review — read-only Grok and OpenCode SQLite sources, fixture coverage,
-resume hints and doctor counts. OpenCode is fixture-only, unverified live.
-M0–M5 merged, including persisted state, attention and desktop notifications.
+v0.1.0 — release workflow, binaries and install notes; platform acceptance tracked in M7 (#8).
+M0–M6 merged. OpenCode is fixture-only, unverified live.
+Keith tags the release after M7 merges.
 
 
 ## Commands

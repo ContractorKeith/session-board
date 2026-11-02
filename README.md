@@ -6,9 +6,38 @@ project, shows working / waiting / idle / error / done, jumps to the tmux pane o
 session, and launches new sessions in a project or a fresh git worktree. Observes agents; never
 owns them. MIT.
 
-Status: M4 in review: persisted organization, unread marks, sorting and tag grouping over the Claude Code
-and Codex sources. See `docs/PLAN.md` for milestones and
-`AGENTS.md` for commands. The package is `session-board`; the binary is `sboard`.
+Status: v0.1.0. See `docs/PLAN.md` for scope and `AGENTS.md` for commands.
+The package is `session-board`; the binary is `sboard`.
+
+## Install
+
+Download `SHA256SUMS` and the archive for your platform from the
+[releases page](https://github.com/ContractorKeith/session-board/releases):
+
+| Platform | Target |
+|---|---|
+| Linux x86_64 | `x86_64-unknown-linux-gnu` |
+| Linux aarch64 | `aarch64-unknown-linux-gnu` |
+| macOS Apple Silicon | `aarch64-apple-darwin` |
+
+From the download directory, verify the archive, extract it, and put `sboard` on PATH.
+For example, on Linux x86_64:
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing
+tar -xzf sboard-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+mkdir -p "$HOME/.local/bin"
+install -m 755 sboard "$HOME/.local/bin/sboard"
+export PATH="$HOME/.local/bin:$PATH" # add to your shell profile for future terminals
+sboard version                       # sboard 0.1.0
+```
+
+On macOS, verify with `shasum -a 256 -c SHA256SUMS --ignore-missing` and use the
+`aarch64-apple-darwin` archive. Each archive includes the README and MIT license.
+A Homebrew tap is planned for later. tmux enables jumps and launches; install an
+agent CLI to resume or launch its sessions.
+
+## Usage
 
 Run `sboard` in a terminal to see the project tree and session details; stores refresh live; config, state and Codex title-index edits need `r`.
 Use `Tab` to switch between attention and the project tree, `j`/`k` or arrows to move, `h`/`l` to fold/unfold, and `r` to rescan.
