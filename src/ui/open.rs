@@ -140,6 +140,8 @@ impl Open {
                     return Ok(());
                 };
                 app.mark_selected(false);
+                app.flush_read_marks(true);
+                let save_notice = app.message.clone();
                 let result = (|| {
                     let (config, _) = Config::load(&Config::path()?)?;
                     app.scan_warnings.extend(tmux::refresh(
@@ -161,13 +163,23 @@ impl Open {
                     if session.pane.is_none() {
                         // Validate before leaving the TUI.
                         launch::resume_command(&session)?;
-                        app.message = format!("no pane; resuming in {}", session.cwd.display());
+                        let notice = format!("no pane; resuming in {}", session.cwd.display());
+                        app.message = if save_notice.is_empty() {
+                            notice
+                        } else {
+                            format!("{save_notice}; {notice}")
+                        };
                         terminal.draw(|f| app.render(f, 0))?;
                     }
                     // A pane can vanish after discovery; fallback resume needs suspension too.
                     app.suspend(terminal, || launch::open(&session, &config.tmux.socket))
                 })();
-                app.message = result.unwrap_or_else(|e| e.to_string());
+                let outcome = result.unwrap_or_else(|e| e.to_string());
+                app.message = if save_notice.is_empty() {
+                    outcome
+                } else {
+                    format!("{save_notice}; {outcome}")
+                };
             }
             Action::New | Action::Worktree => {
                 let root = app.session().map(|s| s.project_root.clone()).or_else(|| {

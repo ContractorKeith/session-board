@@ -456,12 +456,17 @@ fn event_loop(
                     app.summary = format!("{} projects", result.projects.len());
                     app.scan_warnings = result.warnings;
                     app.organize.missing_projects = result.missing_projects.into_iter().collect();
+                    app.replace(result.projects);
                     if let Ok((config, _)) = session_board::config::Config::path()
                         .and_then(|path| session_board::config::Config::load(&path))
                     {
-                        transitions.scan(&result.projects, config.notify, &mut desktop);
+                        transitions.scan_with_state(
+                            &app.organize.projects,
+                            &app.state,
+                            config.notify,
+                            &mut desktop,
+                        );
                     }
-                    app.replace(result.projects);
                 }
                 Err(error) => {
                     // The forwarded panic hook may have scrolled stderr through the frame.

@@ -163,6 +163,7 @@ temp file and rename. Config file (`~/.config/sboard/config.toml`): `roots = []`
 roots to include even with no sessions), `window_days = 7`, `agents = { claude_code = true, ... }`,
 `notify = false`, `tmux.socket = ""`.
 
+Archived projects and sessions do not emit desktop notifications; read marks do not suppress transition notifications.
 Notification transitions compare observed status/activity pairs, without a scan-time or
 activity watermark. First-seen sessions have a five-minute age window against the current
 clock. Retain the last 32 announced raw pairs per session and reject activity below the

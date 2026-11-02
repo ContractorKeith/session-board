@@ -55,7 +55,7 @@ def case(mode):
         root = Path(tmp)
         (root / 'claude/projects/project').mkdir(parents=True)
         (root / 'codex/sessions').mkdir(parents=True)
-        fixture = 'waiting' if mode in ('attention-resume', 'attention-fresh-pane', 'attention-collapsed-read') else 'done'
+        fixture = 'waiting' if mode in ('attention-resume', 'attention-fresh-pane', 'attention-collapsed-read', 'attention-read-in-child') else 'done'
         rows = [json.loads(line) for line in Path(f'fixtures/claude_code/project/{fixture}.jsonl').read_text().splitlines()]
         for row in rows:
             if 'timestamp' in row: row['timestamp'] = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat().replace('+00:00', 'Z')
@@ -100,6 +100,24 @@ def case(mode):
         if mode == 'attention-fresh-pane':
             env['PANES'] = str(root / 'panes')
             (bindir / 'tmux').write_text('#!/bin/sh\nif [ "$1" = -S ] || [ "$1" = -L ]; then shift 2; fi\nif [ "$1" = list-panes ]; then [ -f "$PANES" ] && cat "$PANES"; elif [ "$1" = display ]; then echo %0; else exit 0; fi\n')
+        if mode in ('attention-read-in-child', 'tree-read-in-child'):
+            (root / 'state').mkdir()
+            (root / 'state/state.toml').write_text('first_seen = 0\n')
+            (bindir / 'claude').write_text('#!/bin/sh\necho ready > "$READY_FILE"\nIFS= read -r release\necho done > "$FINISHED_FILE"\n')
+            for row in rows:
+                if 'cwd' in row: row['cwd'] = str(root)
+            (root / 'claude/projects/project/session.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        if mode == 'duplicate-open':
+            (root / 'claude/projects/project/session.jsonl').unlink()
+            for index, name in enumerate(('first', 'second')):
+                cwd = root / name
+                cwd.mkdir()
+                duplicate = [json.loads(line) for line in Path('fixtures/claude_code/project/waiting.jsonl').read_text().splitlines()]
+                for row in duplicate:
+                    row.update(sessionId='duplicate', cwd=str(cwd), timestamp=(datetime.now(timezone.utc) - timedelta(seconds=60 + index * 10)).isoformat().replace('+00:00', 'Z'))
+                (root / ('claude/projects/project/' + name + '.jsonl')).write_text(''.join(json.dumps(row) + '\n' for row in duplicate))
+            env['OPEN_CWD'] = str(root / 'open-cwd')
+            (bindir / 'claude').write_text('#!/bin/sh\npwd -P > "$OPEN_CWD"\n')
         env['READY_FILE'] = str(root / 'ready')
         env['FINISHED_FILE'] = str(root / 'finished')
         env['INT_FILE'] = str(root / 'int')
@@ -209,6 +227,43 @@ def case(mode):
                 assert b'\x1b[?1049l' not in output, 'worker panic restored the live terminal'
                 os.write(master, b'r')
                 wait_for(lambda: '1 projects' in screen(output), 'scan did not recover on r')
+                os.write(master, b'q')
+            elif mode in ('attention-read-in-child', 'tree-read-in-child'):
+                wait_for(lambda: '1 projects' in screen(output), 'initial scan missing')
+                if mode == 'attention-read-in-child':
+                    os.write(master, b'h\th')
+                    wait_for(lambda: 'l to expand' in screen(output), 'attention did not collapse')
+                    advanced = datetime.now(timezone.utc) - timedelta(seconds=30)
+                    done = [json.loads(line) for line in Path('fixtures/claude_code/project/done.jsonl').read_text().splitlines()]
+                    for row in done:
+                        row.update(sessionId='waiting', cwd=str(root), timestamp=advanced.isoformat().replace('+00:00', 'Z'))
+                    (root / 'claude/projects/project/session.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in done))
+                    wait_for(lambda: '•1' in screen(output), 'collapsed done activity did not become unread')
+                    expected_id, expected_at = 'claude_code:waiting', int(advanced.timestamp())
+                    os.write(master, b'\r')
+                else:
+                    expected_id = 'claude_code:done'
+                    expected_at = int(datetime.fromisoformat(rows[-1]['timestamp'].replace('Z', '+00:00')).timestamp())
+                    os.write(master, b'j\r')
+                try:
+                    wait_for(lambda: (root / 'ready').exists(), 'resume child did not start')
+                    assert not (root / 'finished').exists(), 'child exited before disk check'
+                    saved = tomllib.loads((root / 'state/state.toml').read_text())
+                    assert saved.get('read', {}).get(expected_id, -1) >= expected_at, 'read mark was not saved before resume'
+                    second = subprocess.run([BINARY, 'list', '--status', 'attention', '--json'], env=env, capture_output=True, check=True, timeout=5)
+                    assert json.loads(second.stdout) == [], 'second instance still sees the resumed session unread'
+                    assert not (root / 'finished').exists(), 'child exited during disk check'
+                finally:
+                    if (root / 'ready').exists() and not (root / 'finished').exists():
+                        os.write(master, b'release\n')
+                        wait_for(lambda: (root / 'finished').exists(), 'resume child did not stop')
+                wait_for(lambda: 'resumed ' in screen(output), 'board did not return from child')
+                os.write(master, b'q')
+            elif mode == 'duplicate-open':
+                wait_for(lambda: '2 projects' in screen(output), 'duplicate-id fixtures missing')
+                os.write(master, b'\tj\r')
+                wait_for(lambda: (root / 'open-cwd').exists() and 'resumed ' in screen(output), 'duplicate-id resume did not finish')
+                assert Path((root / 'open-cwd').read_text().strip()) == (root / 'second').resolve(), 'open picked the other transcript with the same id'
                 os.write(master, b'q')
             elif mode in ('attention-fresh-pane', 'attention-collapsed-read'):
                 wait_for(lambda: '1 projects' in screen(output), 'initial scan missing')
@@ -496,5 +551,5 @@ def case(mode):
 if __name__ == '__main__':
     BINARY = str(Path(sys.argv[1]).resolve())
     PROBE = str(Path(sys.argv[2]).resolve()) if len(sys.argv) > 2 else None
-    for mode in ([os.environ['SBOARD_PTY_CASE']] if 'SBOARD_PTY_CASE' in os.environ else ['TERM'] if PROBE is None else ['TERM', 'INT', 'HUP', 'q', 'scan-panic', 'error', 'hook', 'dumb', 'stdin', 'idle', 'color-empty', 'color-off', 'unwatched', 'resume', 'attention-resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure', 'cli-termios', 'paste', 'paste-injection', 'typeahead', 'paste-long', 'paste-lock', 'escape-1', 'escape-20', 'escape-40', 'escape-bytewise', 'escape-bytewise-50', 'escape-alt', 'escape-alt-board', 'escape-alone', 'paste-timeout', 'paste-handoff', 'paste-nested', 'decoder-keys', 'escape-sequence-prefix', 'attention-fresh-pane', 'attention-collapsed-read']):
+    for mode in ([os.environ['SBOARD_PTY_CASE']] if 'SBOARD_PTY_CASE' in os.environ else ['TERM'] if PROBE is None else ['TERM', 'INT', 'HUP', 'q', 'scan-panic', 'error', 'hook', 'dumb', 'stdin', 'idle', 'color-empty', 'color-off', 'unwatched', 'resume', 'attention-resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure', 'cli-termios', 'paste', 'paste-injection', 'typeahead', 'paste-long', 'paste-lock', 'escape-1', 'escape-20', 'escape-40', 'escape-bytewise', 'escape-bytewise-50', 'escape-alt', 'escape-alt-board', 'escape-alone', 'paste-timeout', 'paste-handoff', 'paste-nested', 'decoder-keys', 'escape-sequence-prefix', 'attention-fresh-pane', 'attention-collapsed-read', 'attention-read-in-child', 'tree-read-in-child', 'duplicate-open']):
         case(mode)
