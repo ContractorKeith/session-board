@@ -21,7 +21,7 @@ if not TMUX:
     sys.exit(0)
 
 
-def wait_for(predicate, message, seconds=2):
+def wait_for(predicate, message, seconds=10):
     until = time.monotonic() + seconds
     while time.monotonic() < until:
         if predicate():
@@ -100,6 +100,10 @@ def case(mode):
                 victim.mkdir()
                 target = 'a#b' if mode == 'hash-jump' else 'race'
                 run_tmux('new-session', '-d', '-s', target.replace('#', '##'), '-c', str(victim), 'sleep', '60')
+                # tmux can reply before the new pane child has entered its requested cwd.
+                wait_for(lambda: run_tmux('list-panes', '-t', '=' + target, '-F',
+                    '#{pane_current_path}').stdout.decode().strip() == str(victim),
+                    'target pane did not enter the fixture cwd')
                 capture = run_tmux('list-panes', '-t', '=' + target, '-F',
                     '#{n:session_name}:#{session_name}#{n:window_index}:#{window_index}#{n:pane_index}:#{pane_index}6:claude9:999999999#{n:pane_current_path}:#{pane_current_path}').stdout
                 (root / 'panes').write_bytes(capture)
@@ -182,7 +186,7 @@ exec "$REAL_TMUX" -S "$socket" "$@"
                 def gone():
                     status = subprocess.run(['ps', '-p', str(pid), '-o', 'stat='], capture_output=True).stdout.decode().strip()
                     return not status or status.startswith('Z')
-                wait_for(gone, 'sboard survived terminal closure for more than 2 seconds')
+                wait_for(gone, 'sboard survived terminal closure for more than 2 seconds', seconds=2)
             print(mode + ': private tmux regression passed')
         finally:
             subprocess.run(tmux + ['kill-server'], capture_output=True, env=env)

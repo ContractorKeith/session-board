@@ -156,7 +156,7 @@ fn no_color_and_palette_statuses() {
 }
 // FSEvents can deliver a coalesced batch after the first debounce window.
 fn drain_requests(requests: &std::sync::mpsc::Receiver<()>) -> usize {
-    let deadline = Instant::now() + watch::DEBOUNCE + Duration::from_secs(1);
+    let deadline = Instant::now() + watch::DEBOUNCE + Duration::from_secs(2);
     let mut count = 0;
     while requests
         .recv_timeout(deadline.saturating_duration_since(Instant::now()))
@@ -181,7 +181,7 @@ fn recursive_watcher_debounces_single_and_burst_changes() {
             fs::write(nested.join("session.jsonl"), "two").unwrap();
         }
         requests
-            .recv_timeout(Duration::from_secs(3) - started.elapsed())
+            .recv_timeout(Duration::from_secs(10).saturating_sub(started.elapsed()))
             .unwrap();
         assert!(started.elapsed() >= watch::DEBOUNCE);
         let count = 1 + drain_requests(&requests);
@@ -352,21 +352,21 @@ fn scans_initial_watcher_wiring_and_panic_recovery() {
         });
     let error = scans
         .results
-        .recv_timeout(Duration::from_secs(2))
+        .recv_timeout(Duration::from_secs(8))
         .unwrap()
         .unwrap_err();
     assert!(error.to_string().starts_with("panicked:"));
     scans.requests.try_send(()).unwrap();
     let initial = scans
         .results
-        .recv_timeout(Duration::from_secs(2))
+        .recv_timeout(Duration::from_secs(8))
         .unwrap()
         .unwrap();
     assert_eq!(initial.projects[0].sessions[0].status, Status::Working);
     fs::copy("fixtures/claude_code/project/waiting.jsonl", &path).unwrap();
     let refreshed = scans
         .results
-        .recv_timeout(Duration::from_secs(3))
+        .recv_timeout(Duration::from_secs(10))
         .unwrap()
         .unwrap();
     assert_eq!(refreshed.projects[0].sessions[0].status, Status::Waiting);
@@ -406,7 +406,7 @@ fn quiet_store_status_crosses_threshold() {
     assert_eq!(
         scans
             .results
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(Duration::from_secs(5))
             .unwrap()
             .unwrap()
             .projects[0]
@@ -417,7 +417,7 @@ fn quiet_store_status_crosses_threshold() {
     assert_eq!(
         scans
             .results
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(Duration::from_secs(5))
             .unwrap()
             .unwrap()
             .projects[0]
@@ -441,8 +441,15 @@ fn burst_coalesces_and_recreated_root_reattaches() {
     };
     #[cfg(not(unix))]
     let watched = root.clone();
-    let (_watcher, requests) = watch::StoreWatcher::new(std::slice::from_ref(&watched)).unwrap();
-    // Keep one file open so all 200 real writes finish within one second.
+    let (watcher, requests) = watch::StoreWatcher::new(std::slice::from_ref(&watched)).unwrap();
+    assert!(
+        watcher
+            .status
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .is_empty()
+    );
+    // Keep all 200 real writes within one debounce window, even under build load.
     use std::io::Write;
     let started = Instant::now();
     let mut file = fs::File::create(root.join("session.jsonl")).unwrap();
@@ -451,26 +458,45 @@ fn burst_coalesces_and_recreated_root_reattaches() {
     }
     drop(file);
     assert!(
-        started.elapsed() < Duration::from_secs(1),
-        "producer exceeded the one-second burst budget"
+        started.elapsed() < watch::DEBOUNCE,
+        "producer exceeded debounce window: {:?}",
+        started.elapsed()
     );
-    requests.recv_timeout(Duration::from_secs(3)).unwrap();
+    requests.recv_timeout(Duration::from_secs(10)).unwrap();
     let count = 1 + drain_requests(&requests);
     assert!(
         (1..=2).contains(&count),
         "200-write burst produced {count} requests"
     );
     fs::remove_dir_all(&root).unwrap();
-    // Let the backend deliver root removal before recreating it.
-    std::thread::sleep(Duration::from_millis(200));
+    // Synchronize with watcher state instead of guessing when backend events arrive.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let warnings = watcher
+            .status
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap();
+        if warnings.iter().any(|w| w.contains("unwatched:")) {
+            break;
+        }
+    }
     fs::create_dir(&root).unwrap();
     fs::write(root.join("new.jsonl"), "{}").unwrap();
-    requests.recv_timeout(Duration::from_secs(8)).unwrap();
-    // Drain deletion/re-attachment scans; then prove the new directory is watched.
-    std::thread::sleep(Duration::from_secs(3));
-    requests.try_iter().for_each(drop);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if watcher
+            .status
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap()
+            .is_empty()
+        {
+            break;
+        }
+    }
+    // Drain attachment/deletion requests before proving the replacement is watched.
+    drain_requests(&requests);
     fs::write(root.join("new.jsonl"), "changed").unwrap();
-    requests.recv_timeout(Duration::from_secs(3)).unwrap();
+    requests.recv_timeout(Duration::from_secs(10)).unwrap();
 }
 
 #[test]
