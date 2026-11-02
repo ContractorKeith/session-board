@@ -1,3 +1,4 @@
+mod attention;
 mod detail;
 mod open;
 mod tree;
@@ -33,6 +34,10 @@ pub enum Row {
 }
 
 pub struct App {
+    pub state: session_board::state::State,
+    pub attention_focus: bool,
+    pub attention_selected: usize,
+    pub attention_collapsed: bool,
     pub projects: Vec<Project>,
     pub folded: HashSet<PathBuf>,
     pub selected: usize,
@@ -57,6 +62,10 @@ pub enum Action {
 impl App {
     pub fn new(color: bool) -> Self {
         Self {
+            state: Default::default(),
+            attention_focus: false,
+            attention_selected: 0,
+            attention_collapsed: false,
             projects: vec![],
             folded: HashSet::new(),
             selected: 0,
@@ -137,6 +146,41 @@ impl App {
         if self.help {
             return Action::None;
         }
+        if key.code == KeyCode::Tab {
+            self.attention_focus = !self.attention_focus && !self.attention_items().is_empty();
+            if self.attention_focus {
+                self.select_attention(self.attention_selected);
+            }
+            return Action::None;
+        }
+        if self.attention_items().is_empty() {
+            self.attention_focus = false;
+        }
+        if self.attention_focus {
+            let count = self.attention_items().len();
+            self.attention_selected = self
+                .session()
+                .and_then(|selected| {
+                    self.attention_items()
+                        .iter()
+                        .position(|item| item.session.transcript_path == selected.transcript_path)
+                })
+                .unwrap_or(self.attention_selected.min(count.saturating_sub(1)));
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => self
+                    .select_attention((self.attention_selected + 1).min(count.saturating_sub(1))),
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.select_attention(self.attention_selected.saturating_sub(1))
+                }
+                KeyCode::Char('h') | KeyCode::Left => self.attention_collapsed = true,
+                KeyCode::Char('l') | KeyCode::Right => self.attention_collapsed = false,
+                KeyCode::Enter | KeyCode::Char('m' | 'r') => {}
+                _ => return Action::None,
+            }
+            if !matches!(key.code, KeyCode::Enter | KeyCode::Char('m' | 'r')) {
+                return Action::None;
+            }
+        }
         let rows = self.rows();
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
@@ -213,11 +257,17 @@ impl App {
         let vertical =
             Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(frame.area());
         if self.help {
-            frame.render_widget(Paragraph::new("j / k / ↑ / ↓  move\nPgUp / PgDn / Home / End  page / ends\nh / l / ← / →  fold / unfold project\nEnter open · n new · w new in worktree\nr  rescan\n?  toggle help\nq / Ctrl-C  quit").block(Block::default().borders(Borders::ALL).title("Help")), vertical[0]);
+            frame.render_widget(Paragraph::new("Tab  attention / tree\nh / l  collapse / expand attention\nj / k / ↑ / ↓  move\nPgUp / PgDn / Home / End  page / ends\nh / l / ← / →  fold / unfold project\nEnter open · n new · w new in worktree\nr  rescan\n?  toggle help\nq / Ctrl-C  quit").block(Block::default().borders(Borders::ALL).title("Help")), vertical[0]);
         } else {
+            let content = Layout::vertical([
+                Constraint::Length(attention::height(self)),
+                Constraint::Min(0),
+            ])
+            .split(vertical[0]);
+            attention::render(self, frame, content[0], now);
             let panes =
                 Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
-                    .split(vertical[0]);
+                    .split(content[1]);
             tree::render(self, frame, panes[0], now);
             detail::render(self, frame, panes[1]);
         }
@@ -227,7 +277,17 @@ impl App {
             Constraint::Length(hint.chars().count() as u16),
         ])
         .split(vertical[1]);
-        frame.render_widget(Paragraph::new(self.status_text()), bar[0]);
+        frame.render_widget(
+            Paragraph::new({
+                let count = self.attention_items().len();
+                if count > 0 {
+                    format!("{count} need you · {}", self.status_text())
+                } else {
+                    self.status_text()
+                }
+            }),
+            bar[0],
+        );
         frame.render_widget(Paragraph::new(hint), bar[1]);
     }
 }
@@ -331,6 +391,8 @@ fn event_loop(
     });
     let mut pending = false;
     let mut open = open::Open::default();
+    let mut transitions = session_board::notify::Transitions::default();
+    let mut desktop = session_board::notify::Desktop::default();
     let mut dirty = true;
     let mut worker_dead = false;
     let mut next_age = Instant::now();
@@ -361,6 +423,20 @@ fn event_loop(
                 Ok(result) => {
                     app.summary = format!("{} projects", result.projects.len());
                     app.scan_warnings = result.warnings;
+                    if let Ok((config, _)) = session_board::config::Config::path()
+                        .and_then(|path| session_board::config::Config::load(&path))
+                    {
+                        transitions.scan(&result.projects, config.notify, &mut desktop);
+                    }
+                    match session_board::state::State::path()
+                        .and_then(|path| session_board::state::State::load(&path))
+                    {
+                        Ok((state, warnings)) => {
+                            app.state = state;
+                            app.scan_warnings.extend(warnings);
+                        }
+                        Err(error) => app.scan_warnings.push(format!("state: {error}")),
+                    }
                     app.replace(result.projects);
                 }
                 Err(error) => {

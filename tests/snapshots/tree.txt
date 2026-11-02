@@ -1,3 +1,13 @@
+┌Attention─────────────────────────────────────────────────────────────────────────────────────────┐
+│◐ waiting claude_code project · User placeholder · 1m                                             │
+│◐ waiting codex       project · User placeholder · 1m                                             │
+│✕ error   claude_code project · User placeholder · 1m                                             │
+│✕ error   codex       project · User placeholder · 1m                                             │
+│✕ error   claude_code project · User placeholder · 40m                                            │
+│✕ error   codex       project · User placeholder · 40m                                            │
+│✓ done    claude_code project · Title placeholder · 1m                                            │
+│✓ done    codex       project · Title placeholder · 1m                                            │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌Projects─────────────────────────────────────────────┐┌Session────────────────────────────────────┐
 │  ▾ project (14)                                     ││Cwd: /home/user/project                    │
 │›   ✓ claude_code  1m  Title placeholder             ││Branch: unknown                            │
@@ -8,23 +18,13 @@
 │    ✓ codex        1m  Title placeholder             ││                                           │
 │    ✕ codex        1m  User placeholder              ││                                           │
 │    ○ codex        1m  User placeholder              ││                                           │
-│    ◐ codex        1m  User placeholder              ││                                           │
-│    ● codex        1m  User placeholder              ││                                           │
+│    ◐ codex        1m  User placeholder              ││Last assistant:                            │
+│    ● codex        1m  User placeholder              ││Assistant placeholder                      │
 │    ✕ claude_code 40m  User placeholder              ││                                           │
 │    ✕ codex       40m  User placeholder              ││                                           │
 │    ○ claude_code  1h  User placeholder              ││                                           │
-│    ○ codex        1h  User placeholder              ││Last assistant:                            │
-│                                                     ││Assistant placeholder                      │
-│                                                     ││                                           │
-│                                                     ││                                           │
-│                                                     ││                                           │
-│                                                     ││                                           │
-│                                                     ││                                           │
-│                                                     ││                                           │
-│                                                     ││                                           │
-│                                                     ││                                           │
-│                                                     ││Resume:                                    │
+│    ○ codex        1h  User placeholder              ││Resume:                                    │
 │                                                     ││claude --resume done                       │
 │                                                     ││Pane: none                                 │
 └─────────────────────────────────────────────────────┘└───────────────────────────────────────────┘
-1 projects                                                                ? help · r rescan · q quit
+8 need you · 1 projects                                                   ? help · r rescan · q quit

@@ -1,7 +1,9 @@
+pub mod attention;
 pub mod cli;
 pub mod config;
 pub mod launch;
 pub mod model;
+pub mod notify;
 pub mod pipeline;
 pub mod project;
 pub mod scan;

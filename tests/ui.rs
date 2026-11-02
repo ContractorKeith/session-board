@@ -508,13 +508,13 @@ fn release_keys_color_warnings_and_scroll_memory() {
             .unwrap()
             .ends_with("? help · r rescan · q quit")
     );
-    frame(&app, 100, 8);
+    frame(&app, 100, 20);
     key(&mut app, KeyCode::End);
-    frame(&app, 100, 8);
+    frame(&app, 100, 20);
     let offset = app.list.borrow().offset();
     assert!(offset > 0);
     key(&mut app, KeyCode::Up);
-    frame(&app, 100, 8);
+    frame(&app, 100, 20);
     assert_eq!(app.list.borrow().offset(), offset);
     key(&mut app, KeyCode::PageUp);
     assert!(app.selected < app.rows().len() - 2);
@@ -551,4 +551,92 @@ fn script_pty_terminal_hygiene_and_worker_recovery() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn attention_focus_collapse_empty_and_cli_order() {
+    let mut app = fixture_app();
+    let mut cli_projects = app.projects.clone();
+    cli::filter(
+        &mut cli_projects,
+        &app.state,
+        None,
+        Some(cli::StatusFilter::Attention),
+        None,
+        false,
+    );
+    assert_eq!(
+        app.attention_items()
+            .iter()
+            .map(|i| &i.session.id)
+            .collect::<Vec<_>>(),
+        cli_projects
+            .iter()
+            .flat_map(|p| &p.sessions)
+            .map(|s| &s.id)
+            .collect::<Vec<_>>()
+    );
+    key(&mut app, KeyCode::Tab);
+    assert!(app.attention_focus);
+    assert!(app.session().is_some());
+    key(&mut app, KeyCode::Down);
+    assert_eq!(app.attention_selected, 1);
+    assert!(frame(&app, 100, 30).contains("Attention [focused]"));
+    key(&mut app, KeyCode::Left);
+    assert!(frame(&app, 100, 30).contains("to expand"));
+    key(&mut app, KeyCode::Right);
+    assert!(!app.attention_collapsed);
+    key(&mut app, KeyCode::Tab);
+    assert!(!app.attention_focus);
+    app.replace(vec![]);
+    key(&mut app, KeyCode::Tab);
+    assert!(!app.attention_focus);
+    assert!(!frame(&app, 100, 30).contains("Attention"));
+}
+#[test]
+fn attention_overflow_is_bounded_and_navigable() {
+    let mut app = fixture_app();
+    let mut sample = app.projects[0].sessions[0].clone();
+    sample.status = session_board::model::Status::Waiting;
+    app.projects[0].sessions = (0..20)
+        .map(|n| {
+            let mut s = sample.clone();
+            s.id = format!("sample:{n:02}");
+            s.transcript_path = format!("sample-{n:02}").into();
+            s
+        })
+        .collect();
+    let rendered = frame(&app, 100, 30);
+    assert!(rendered.contains("+13 more"));
+    assert!(rendered.contains("20 need you"));
+    assert!(rendered.lines().nth(10).unwrap().contains("Projects"));
+    key(&mut app, KeyCode::Tab);
+    for _ in 0..30 {
+        key(&mut app, KeyCode::Down);
+    }
+    assert_eq!(app.session().unwrap().id, "sample:19");
+    frame(&app, 100, 30);
+}
+
+#[test]
+fn attention_reflects_read_marks_on_the_next_frame() {
+    let mut app = fixture_app();
+    let done = app
+        .attention_items()
+        .iter()
+        .find(|item| item.session.status == session_board::model::Status::Done)
+        .unwrap()
+        .session
+        .clone();
+    let before = app.attention_items().len();
+    app.state
+        .read
+        .insert(done.id.clone(), done.last_activity_at);
+    assert_eq!(app.attention_items().len(), before - 1);
+    assert!(
+        !app.attention_items()
+            .iter()
+            .any(|item| item.session.id == done.id)
+    );
+    assert!(frame(&app, 100, 30).contains(&format!("{} need you", before - 1)));
 }

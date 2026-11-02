@@ -11,7 +11,7 @@ and Codex sources. See `docs/PLAN.md` for milestones and
 `AGENTS.md` for commands. The package is `session-board`; the binary is `sboard`.
 
 Run `sboard` in a terminal to see the project tree and session details; stores refresh live; config, state and Codex title-index edits need `r`.
-Use `j`/`k` or arrows to move, `h`/`l` to fold/unfold, and `r` to rescan.
+Use `Tab` to switch between attention and the project tree, `j`/`k` or arrows to move, `h`/`l` to fold/unfold, and `r` to rescan.
 Press `?` for help, `q` or Ctrl-C to quit.
 Enter jumps or resumes; `n` launches in the selected project; `w` launches in a fresh git worktree.
 Use `sboard open <session-id>` or `sboard new <project-path> [--agent claude_code|codex] [--worktree <branch>]`.
@@ -42,3 +42,12 @@ Config, state and the optional Codex title index are checked as regular files be
 reading. FIFOs, devices, directories and symlink files are rejected without opening
 them; bad config is an error, bad state warns and uses empty state, and a bad index
 warns/counts a skipped store while falling back to prompt titles.
+
+The attention pane shows waiting, error and done-unread sessions in the same order as
+`sboard list --status attention`. With attention focused, `h` collapses it and `l`
+expands it; Enter uses the same jump/resume action as the tree.
+
+Desktop notifications are off by default. Add `notify = true` at the top level of
+`config.toml` to notify on transitions into waiting, done or error. The first scan
+is silent. Linux uses `notify-send --app-name sboard`; macOS uses `osascript`.
+A missing notification command warns once and is ignored.

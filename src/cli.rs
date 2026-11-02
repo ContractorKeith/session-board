@@ -213,13 +213,24 @@ pub fn filter(
             .get(&s.id)
             .is_none_or(|t| s.last_activity_at > *t)
     };
-    let rank = |s: &Session| match s.status {
-        Status::Waiting => 0,
-        Status::Error => 1,
-        Status::Done => 2,
-        _ => 3,
-    };
     let attention = matches!(status, Some(StatusFilter::Attention));
+    let order: std::collections::HashMap<_, _> = if attention {
+        crate::attention::attention(projects, state)
+            .into_iter()
+            .enumerate()
+            .map(|(index, item)| {
+                (
+                    (
+                        item.session.id.clone(),
+                        item.session.transcript_path.clone(),
+                    ),
+                    index,
+                )
+            })
+            .collect()
+    } else {
+        Default::default()
+    };
     projects.retain_mut(|p| {
         if project.is_some_and(|root| root != p.root) || (!all && p.archived) {
             return false;
@@ -235,7 +246,7 @@ pub fn filter(
             match status {
                 None => true,
                 Some(StatusFilter::Attention) => {
-                    rank(s) < 2 || (s.status == Status::Done && unread(s))
+                    order.contains_key(&(s.id.clone(), s.transcript_path.clone()))
                 }
                 Some(f) => {
                     s.status
@@ -250,20 +261,39 @@ pub fn filter(
             }
         });
         p.unread_count = p.sessions.iter().filter(|s| unread(s)).count();
-        if attention {
-            p.sessions.sort_by(|a, b| {
-                rank(a)
-                    .cmp(&rank(b))
-                    .then_with(|| b.last_activity_at.cmp(&a.last_activity_at))
-                    .then_with(|| a.id.cmp(&b.id))
-            });
-        }
         !p.sessions.is_empty() || (!had_sessions && status.is_none() && agent.is_none())
     });
+    let order: std::collections::HashMap<_, _> = if attention {
+        crate::attention::attention(projects, state)
+            .into_iter()
+            .enumerate()
+            .map(|(index, item)| {
+                (
+                    (
+                        item.session.id.clone(),
+                        item.session.transcript_path.clone(),
+                    ),
+                    index,
+                )
+            })
+            .collect()
+    } else {
+        Default::default()
+    };
+    if attention {
+        for p in projects.iter_mut() {
+            p.sessions
+                .sort_by_key(|s| order[&(s.id.clone(), s.transcript_path.clone())]);
+        }
+    }
     projects.sort_by(|a, b| {
         let activity =
             |p: &crate::model::Project| p.sessions.first().map_or(i64::MIN, |s| s.last_activity_at);
-        let priority = |p: &crate::model::Project| p.sessions.first().map_or(4, rank);
+        let priority = |p: &crate::model::Project| {
+            p.sessions.first().map_or(usize::MAX, |s| {
+                order[&(s.id.clone(), s.transcript_path.clone())]
+            })
+        };
         (if attention {
             priority(a).cmp(&priority(b))
         } else {
