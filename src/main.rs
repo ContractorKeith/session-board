@@ -56,7 +56,7 @@ fn run(cli: Cli) -> io::Result<i32> {
             Ok(0)
         }
         Some(Commands::Version) => {
-            writeln!(io::stdout().lock(), "{}", env!("CARGO_PKG_VERSION"))?;
+            writeln!(io::stdout().lock(), "sboard {}", env!("CARGO_PKG_VERSION"))?;
             Ok(0)
         }
         Some(Commands::Doctor { json }) => {

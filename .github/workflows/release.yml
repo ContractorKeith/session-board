@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            command: cargo
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            command: cross
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            command: cargo
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - name: Install cross compiler and strip
+        if: matrix.command == 'cross'
+        run: |
+          cargo install cross --version 0.2.5 --locked
+          sudo apt-get update
+          sudo apt-get install --yes binutils-aarch64-linux-gnu
+      - name: Build
+        run: ${{ matrix.command }} build --release --locked --target ${{ matrix.target }}
+      - name: Verify native binary version
+        if: matrix.command == 'cargo'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 --locked | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          test "$(target/"$TARGET"/release/sboard version)" = "sboard $version"
+      - name: Strip and archive
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          if [[ "$TARGET" == aarch64-unknown-linux-gnu ]]; then
+            aarch64-linux-gnu-strip "target/$TARGET/release/sboard"
+          else
+            strip "target/$TARGET/release/sboard"
+          fi
+          mkdir -p dist package
+          cp "target/$TARGET/release/sboard" README.md LICENSE package/
+          tar -czf "dist/sboard-$GITHUB_REF_NAME-$TARGET.tar.gz" -C package sboard README.md LICENSE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sboard-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sboard-*
+          merge-multiple: true
+          path: dist
+      - name: Publish archives and checksums
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          test "$(find . -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 3
+          sha256sum ./*.tar.gz > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          prerelease=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            prerelease=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" ./*.tar.gz SHA256SUMS \
+            --verify-tag --title "$GITHUB_REF_NAME" --generate-notes "${prerelease[@]}"

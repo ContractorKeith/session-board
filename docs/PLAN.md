@@ -1,6 +1,6 @@
 # session-board — Build Plan
 
-Status: planned, no code yet (2026-11-01). Written from Keith's scope note and a read of
+Status: v0.1.0 release candidate; acceptance tracked in M7 (#8). Written from Keith's scope note and a read of
 [agent-deck](https://github.com/asheshgoplani/agent-deck) (Go, MIT, tmux-backed, 1.2k stars),
 [agenthud](https://github.com/neochoon/agenthud) (TypeScript, MIT, read-only HUD) and
 [agent-mux](https://github.com/leonardcser/agent-mux) (Rust, MIT, tmux pane list), with a
@@ -77,7 +77,7 @@ v1 is done when every row marked **v1** in §4 passes the acceptance checks in �
 | 19 | Desktop notification on status change to waiting, done or error (optional) | v1 | M5 | `notify-send` on Linux, `osascript` on macOS; off by default |
 | 20 | Grok source: `~/.grok/sessions/session_search.sqlite` `session_docs` | v1 | M6 | Header WAL + WAL present: mode=ro; header WAL + no WAL: checked immutable; rollback header: mode=ro locks; SHM allowed beside WAL, never create WAL/journal; regular entries only |
 | 21 | OpenCode source: `~/.local/share/opencode/opencode.db` | v1 | M6 | Fixture-only until a live install exists |
-| 22 | `v0.1.0`: Linux x86_64 and aarch64, macOS aarch64 binaries, checksums, install notes | v1 | M7 | `cargo-dist` or a release workflow; Homebrew tap later |
+| 22 | `v0.1.0`: Linux x86_64 and aarch64, macOS aarch64 binaries, checksums, install notes | v1 | M7 | Tag-triggered release workflow; Homebrew tap later |
 | 23 | Token and cost rollup per project and day from transcripts | Later | | v0.2; SQLite index, microdollar ledger, `costs sync` |
 | 24 | Worktree list, cleanup, "session uses worktree X" | Later | | v0.2 |
 | 25 | Fuzzy search across titles and prompts; preview without leaving | Later | | v0.2 |
@@ -236,7 +236,7 @@ M6 may run in parallel after M2 and merge in that order; M7 last.
 | M4 | grouping, tags, pins, sort, read marks, archive | state survives a restart in a temp state dir; sort orders are deterministic |
 | M5 | attention queue, notifications | `list --status attention` ordering; notifier is called once per transition |
 | M6 | Grok and OpenCode sources | fixtures for both; `doctor` reports them |
-| M7 | release workflow, binaries, checksums, install notes, v0.1.0 | release job produces three artifacts and `sboard version` prints the tag |
+| M7 | release workflow, binaries, checksums, install notes, v0.1.0 | release job produces three artifacts and `sboard version` prints the package version |
 
 ## 9. Testing
 
@@ -265,7 +265,7 @@ On Omarchy and on the Mac Studio, each with live Claude Code and Codex stores:
 5. Pin, tag, read and archive survive quitting and reopening.
 6. `sboard list --json` is valid JSON with the same sessions and statuses as the screen.
 7. `sboard doctor` names every store found and every source skipped, with counts.
-8. The release page has three binaries with checksums and `sboard version` prints `0.1.0`.
+8. The release page has three binaries with checksums and `sboard version` prints `sboard 0.1.0`.
 
 ## 11. Open questions
 
