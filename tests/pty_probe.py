@@ -1,6 +1,7 @@
 """Bound test acknowledgements even when a PTY reports spurious readiness."""
 from contextlib import contextmanager
 import os
+import errno
 import select
 import signal
 import time
@@ -14,6 +15,10 @@ def read_ready(fd, timeout=.005):
         return os.read(fd, 65536)
     except BlockingIOError:
         return b''
+    except OSError as error:
+        if error.errno == errno.EIO:  # PTY hangup on Linux.
+            return b''
+        raise
 
 
 def drain(fd):
@@ -61,3 +66,12 @@ def reap(pid, label):
                 return
             time.sleep(.01)
     raise TimeoutError(f'{label}: child {pid} did not exit after SIGKILL')
+
+
+def wait_exit(process, pump, label, seconds):
+    until = time.monotonic() + seconds
+    while process.poll() is None:
+        if time.monotonic() >= until:
+            raise TimeoutError(f'{label}: waiting for child exit while draining PTY')
+        pump()
+    return process.returncode

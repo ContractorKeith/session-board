@@ -12,7 +12,7 @@ import tempfile
 import termios
 import time
 from terminal import screen
-from pty_probe import deadline, read_ready
+from pty_probe import deadline, read_ready, wait_exit
 
 binary = str(Path(sys.argv[1]).resolve())
 for mode in ([sys.argv[2]] if len(sys.argv) > 2 else ('slow', 'disabled', 'fail', 'timeout', 'scan-start')):
@@ -110,7 +110,7 @@ for mode in ([sys.argv[2]] if len(sys.argv) > 2 else ('slow', 'disabled', 'fail'
                     assert '1 warnings:' in screen(output).splitlines()[-1]
             stage = 'quit acknowledgement'
             os.write(master, b'q')
-            proc.wait(timeout=5)
+            wait_exit(proc, pump, f'{mode}: {stage}', 5)
             assert proc.returncode == 0
             stage = 'stderr check after exit'
             errors_file.seek(0)
@@ -122,10 +122,10 @@ for mode in ([sys.argv[2]] if len(sys.argv) > 2 else ('slow', 'disabled', 'fail'
                 # Allow the board to cancel/reap its notifier group on assertion failures too.
                 try:
                     os.write(master, b'q')
-                    proc.wait(timeout=8)
+                    wait_exit(proc, pump, f'{mode}: cleanup', 8)
                 except (OSError, subprocess.TimeoutExpired):
                     proc.kill()
-                    proc.wait(timeout=5)
+                    wait_exit(proc, pump, f'{mode}: {stage}', 5)
             os.close(master)
             os.close(gate_fd)
             os.close(gate_reader)

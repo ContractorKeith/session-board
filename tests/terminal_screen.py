@@ -1,9 +1,12 @@
 """PTY reads may stop anywhere in a cursor-addressed frame."""
 import os
+import pty
+import subprocess
+import sys
 import time
 import unittest
 from unittest.mock import patch
-from pty_probe import deadline, drain, read_ready
+from pty_probe import deadline, drain, read_ready, wait_exit
 from terminal import screen
 
 
@@ -43,6 +46,36 @@ class ProbeIOTests(unittest.TestCase):
             with deadline(lambda: 'notify probe: EOF drain', 1):
                 self.assertEqual(drain(reader), b'')
         finally:
+            os.close(reader)
+
+    def test_closed_pty_is_a_finished_read(self):
+        master, slave = pty.openpty()
+        os.close(slave)
+        try:
+            with deadline(lambda: 'notify probe: PTY hangup read', 1):
+                self.assertEqual(read_ready(master), b'')
+        finally:
+            os.close(master)
+
+    def test_exit_acknowledgement_drains_backpressure_and_uses_poll(self):
+        reader, writer = os.pipe()
+        child = subprocess.Popen(
+            [sys.executable, '-c', 'import os; data=b"x"*1048576;\nwhile data: data=data[os.write(1,data):]'],
+            stdout=writer, stderr=subprocess.DEVNULL)
+        os.close(writer)
+        received = bytearray()
+        def pump():
+            received.extend(read_ready(reader))
+        try:
+            # The child cannot finish until the parent drains more than pipe capacity.
+            with patch.object(child, 'wait', side_effect=AssertionError('use poll, not timed wait')):
+                self.assertEqual(wait_exit(child, pump, 'notify probe: backpressure exit', 5), 0)
+            received.extend(drain(reader))
+            self.assertEqual(len(received), 1048576)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                wait_exit(child, pump, 'notify probe: killed writer cleanup', 5)
             os.close(reader)
 
     def test_watchdog_names_the_test_and_acknowledgement(self):
