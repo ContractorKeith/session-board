@@ -146,3 +146,38 @@ fn complete_record_at_exact_tail_cap_is_retained() {
     assert_eq!(scan.skipped_lines, 0);
     assert!(scan.warnings.is_empty());
 }
+
+#[test]
+fn meaningful_record_one_byte_beyond_one_mib_cap_is_not_recovered() {
+    let fixture = fs::read_to_string("fixtures/tail-sampling/claude.jsonl").unwrap();
+    let rows: Vec<serde_json::Value> = fixture
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let complete = format!("{}\n", rows[2]);
+    let mut attachment = serde_json::json!({"type":"attachment", "text":""});
+    let overhead = format!("{attachment}\n").len();
+    // Pin the contract independently of the reader's MAX_TAIL_BYTES constant.
+    let distance = 1024 * 1024 + 1;
+    attachment["text"] = serde_json::json!("x".repeat(distance - complete.len() - overhead));
+    let prefix = format!("{}\n{}\n", rows[0], rows[1]);
+    let text = format!("{prefix}{complete}{attachment}\n");
+    assert_eq!(text.len() - prefix.len(), distance);
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(temp.path().join("beyond-cap.jsonl"), text).unwrap();
+    let scan = Claude {
+        root: temp.path().into(),
+        now: NOW,
+    }
+    .scan(&Config::default());
+    assert_eq!(scan.sessions.len(), 1);
+    assert_eq!(scan.sessions[0].status, Status::Idle);
+    assert!(scan.sessions[0].last_assistant_text.is_empty());
+    assert_eq!(scan.skipped_sessions, 0);
+    assert_eq!(scan.skipped_lines, 1);
+    assert!(
+        scan.warnings
+            .iter()
+            .any(|warning| warning.contains("1 MiB tail cap"))
+    );
+}
