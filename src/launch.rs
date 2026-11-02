@@ -92,6 +92,9 @@ pub fn capture_terminal() -> io::Result<()> {
     Ok(())
 }
 pub fn restore_terminal() {
+    if child_hung_up() {
+        return;
+    }
     if let Some(settings) = TERMINAL_BASELINE.get()
         && let Ok(tty) = std::fs::File::open("/dev/tty")
     {
@@ -125,32 +128,156 @@ static CHILD_INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 pub fn take_child_interrupt() -> bool {
     CHILD_INTERRUPTED.swap(false, std::sync::atomic::Ordering::SeqCst)
 }
+static CHILD_HUNG_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn child_hung_up() -> bool {
+    CHILD_HUNG_UP.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+// Block SIGTTOU only on this thread while transferring terminal ownership.
+fn foreground(fd: i32, group: i32) -> io::Result<()> {
+    unsafe {
+        let mut blocked = std::mem::zeroed();
+        let mut previous = std::mem::zeroed();
+        libc::sigemptyset(&mut blocked);
+        libc::sigaddset(&mut blocked, libc::SIGTTOU);
+        let error = libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, &mut previous);
+        if error != 0 {
+            return Err(io::Error::from_raw_os_error(error));
+        }
+        let result = libc::tcsetpgrp(fd, group);
+        let error = io::Error::last_os_error();
+        libc::pthread_sigmask(libc::SIG_SETMASK, &previous, std::ptr::null_mut());
+        if result == -1 { Err(error) } else { Ok(()) }
+    }
+}
+
+fn terminal_hung_up() -> bool {
+    let mut fd = libc::pollfd {
+        fd: libc::STDIN_FILENO,
+        events: 0,
+        revents: 0,
+    };
+    // A zero-time poll observes PTY closure without consuming the child's input.
+    (unsafe { libc::poll(&mut fd, 1, 0) > 0 })
+        && fd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+}
+
 pub fn run(command: &mut Command) -> io::Result<()> {
-    use std::io::IsTerminal;
-    if io::stdin().is_terminal() {
+    use std::{
+        io::IsTerminal,
+        os::unix::process::{CommandExt, ExitStatusExt},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
+    let tty = io::stdin().is_terminal();
+    if tty {
         capture_terminal()?;
     }
     restore_terminal();
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
     let interrupted = Arc::new(AtomicBool::new(false));
-    // A caught parent signal resets to the default disposition across the child's exec.
-    let registration =
-        signal_hook::flag::register(signal_hook::consts::SIGINT, interrupted.clone())?;
-    let result = command.status();
+    let hung_up = Arc::new(AtomicBool::new(false));
+    // Caught signals reset to their default disposition across the child's exec.
+    let int = signal_hook::flag::register(signal_hook::consts::SIGINT, interrupted.clone())?;
+    let hup = match signal_hook::flag::register(signal_hook::consts::SIGHUP, hung_up.clone()) {
+        Ok(id) => id,
+        Err(error) => {
+            signal_hook::low_level::unregister(int);
+            return Err(error);
+        }
+    };
+    let parent_group = unsafe { libc::tcgetpgrp(libc::STDIN_FILENO) };
+    command.process_group(0);
+    unsafe {
+        command.pre_exec(move || {
+            if tty {
+                foreground(libc::STDIN_FILENO, libc::getpgrp())?;
+            }
+            Ok(())
+        });
+    }
+    let result = (|| {
+        let mut child = command.spawn().map_err(|e| command_error(command, e))?;
+        let group = child.id() as i32;
+        let mut forwarded_int = false;
+        loop {
+            if hung_up.load(Ordering::SeqCst) || (tty && terminal_hung_up()) {
+                CHILD_HUNG_UP.store(true, Ordering::SeqCst);
+                // Give the whole group time to handle HUP and reap its own children.
+                unsafe {
+                    libc::kill(-group, libc::SIGHUP);
+                }
+                let deadline = Instant::now() + Duration::from_millis(500);
+                // Keep the leader unreaped until escalation so its group id cannot be reused.
+                while Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                // The leader may have exited while a descendant ignored HUP.
+                unsafe {
+                    libc::kill(-group, libc::SIGKILL);
+                }
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while child.try_wait()?.is_none() {
+                    if Instant::now() >= deadline {
+                        return Err(io::Error::other("agent did not exit after hangup"));
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                return Err(io::Error::other("terminal hung up"));
+            }
+            if interrupted.load(Ordering::SeqCst) && !forwarded_int {
+                unsafe {
+                    libc::kill(-group, libc::SIGINT);
+                }
+                forwarded_int = true;
+            }
+            // Observe stops as well as exits: the shell tracks sboard's job group,
+            // while terminal input goes to the separate agent group.
+            let mut status = 0;
+            let waited =
+                unsafe { libc::waitpid(group, &mut status, libc::WNOHANG | libc::WUNTRACED) };
+            if waited == -1 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            if waited == group && libc::WIFSTOPPED(status) {
+                if tty {
+                    foreground(libc::STDIN_FILENO, parent_group)?;
+                }
+                // SIGSTOP also works when sboard is the leader of an orphaned PTY group.
+                unsafe { libc::raise(libc::SIGSTOP) };
+                if tty {
+                    foreground(libc::STDIN_FILENO, group)?;
+                }
+                unsafe { libc::kill(-group, libc::SIGCONT) };
+                continue;
+            }
+            if waited == group {
+                return if std::process::ExitStatus::from_raw(status).success() {
+                    Ok(())
+                } else {
+                    Err(io::Error::other("agent or tmux exited unsuccessfully"))
+                };
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    })();
+    if tty && !child_hung_up() {
+        let _ = foreground(libc::STDIN_FILENO, parent_group);
+    }
     restore_terminal();
-    signal_hook::low_level::unregister(registration);
+    signal_hook::low_level::unregister(hup);
+    signal_hook::low_level::unregister(int);
     if interrupted.load(Ordering::SeqCst) {
         CHILD_INTERRUPTED.store(true, Ordering::SeqCst);
     }
-    if result.map_err(|e| command_error(command, e))?.success() {
-        Ok(())
-    } else {
-        Err(io::Error::other("agent or tmux exited unsuccessfully"))
-    }
+    result
 }
+
 pub fn directory(cwd: &Path) -> io::Result<()> {
     if cwd.is_dir() {
         Ok(())
@@ -192,24 +319,22 @@ pub fn resume_command(session: &Session) -> io::Result<Command> {
     Ok(command)
 }
 pub fn open(session: &Session, socket: &str) -> io::Result<String> {
-    let mut jump_error = None;
     if let Some(target) = &session.pane {
-        match tmux::jump(socket, target) {
-            Ok(()) => {
-                return Ok(with_notice(
-                    format!("jumped to {target}"),
-                    &tmux::connect(socket),
-                ));
-            }
-            Err(e) => jump_error = Some(e),
-        }
+        tmux::jump(socket, target)
+            .map_err(|error| io::Error::other(format!("tmux jump to {target} failed: {error}")))?;
+        return Ok(with_notice(
+            format!("jumped to {target}"),
+            &tmux::connect(socket),
+        ));
     }
     run(&mut resume_command(session)?)?;
-    Ok(match jump_error {
-        Some(error) => format!("{error}; resumed {}", session.id),
-        None => format!("resumed {}", session.id),
-    })
+    Ok(format!(
+        "resumed {} in {}",
+        session.id,
+        session.cwd.display()
+    ))
 }
+
 fn with_notice(message: String, connection: &tmux::Connection) -> String {
     match &connection.notice {
         Some(notice) => format!("{notice}; {message}"),

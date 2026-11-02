@@ -19,7 +19,11 @@ fn main() {
         }
         std::process::exit(code);
     });
-    match run(cli) {
+    let result = run(cli);
+    if session_board::launch::child_hung_up() {
+        std::process::exit(129);
+    }
+    match result {
         Ok(code) => std::process::exit(code),
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
         Err(error) => {
@@ -32,10 +36,17 @@ fn main() {
 fn run(cli: Cli) -> io::Result<i32> {
     match cli.command {
         None => ui::run(),
-        Some(Commands::Open { session_id }) => {
-            cli::open(&session_id)?;
-            Ok(0)
-        }
+        Some(Commands::Open { session_id }) => match cli::open(&session_id) {
+            Ok(()) => Ok(0),
+            Err(error) => {
+                let _ = writeln!(
+                    io::stderr().lock(),
+                    "error: {}",
+                    session_board::source::title(&error.to_string())
+                );
+                Ok(1)
+            }
+        },
         Some(Commands::New {
             project_path,
             agent,

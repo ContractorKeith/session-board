@@ -642,7 +642,7 @@ fn issue46_tmux_launch_escapes_formats_resolves_executable_and_forwards_stores()
 }
 
 #[test]
-fn issue50_only_newest_session_gets_pane_and_vanished_pane_resumes() {
+fn issue50_only_newest_session_gets_pane_and_vanished_pane_never_resumes() {
     let s = Sandbox::new();
     let newest = s.session("claude_code");
     let text = fs::read_to_string(s.path("claude/projects/project/session.jsonl")).unwrap();
@@ -700,10 +700,14 @@ fn issue50_only_newest_session_gets_pane_and_vanished_pane_resumes() {
         &s.path("bin/tmux"),
         "if [ \"$1\" = '-S' ] || [ \"$1\" = '-L' ]; then shift 2; fi\nif [ \"$1\" = list-panes ]; then cat \"$PANES\"; elif [ \"$1\" = display ]; then exit 1; else echo unexpected-jump >> \"$RECORD_TMUX\"; exit 1; fi",
     );
-    success(s.cmd().args(["open", &newest]).output().unwrap());
-    assert_eq!(
-        fs::read_to_string(s.path("args")).unwrap(),
-        "--resume=done\n"
+    fs::remove_file(s.path("args")).unwrap();
+    failure(
+        s.cmd().args(["open", &newest]).output().unwrap(),
+        "pane no longer exists",
+    );
+    assert!(
+        !s.path("args").exists(),
+        "vanished pane must not start a second copy"
     );
     assert!(
         !fs::read_to_string(s.path("tmux-args"))
@@ -995,7 +999,7 @@ fn issue80_private_tmux_literal_hash_session_jumps() {
 }
 
 #[test]
-fn issue81_private_tmux_session_removed_after_display_resumes() {
+fn issue81_private_tmux_session_removed_after_display_reports_error() {
     let _guard = process_fixture_guard();
     let out = Command::new("python3")
         .arg("tests/tmux.py")
@@ -1008,5 +1012,33 @@ fn issue81_private_tmux_session_removed_after_display_resumes() {
         "{}\n{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn issue121_private_tmux_without_attached_client_never_resumes() {
+    let output = Command::new("python3")
+        .args(["tests/tmux.py", env!("CARGO_BIN_EXE_sboard"), "no-client"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn issue126_ctrl_z_returns_to_shell_and_fg_resumes_agent() {
+    let output = Command::new("python3")
+        .args(["tests/job_control.py", env!("CARGO_BIN_EXE_sboard")])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
 }
