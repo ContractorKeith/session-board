@@ -16,15 +16,14 @@ import sys
 import tempfile
 import time
 
-BINARY = str(Path(sys.argv[1]).resolve())
-PROBE = str(Path(sys.argv[2]).resolve()) if len(sys.argv) > 2 else None
-
 
 def screen(data):
     # Reconstruct cursor-addressed diff output without an external terminal emulator.
     grid = [[' '] * 100 for _ in range(30)]
     row = col = 0
-    chunks = re.split(r'(\x1b\[[?0-9;]*[A-Za-z])', data.decode('utf-8', errors='ignore'))
+    # Rebuilt from the full transcript each call; wait for a partial CSI's next read.
+    text = re.sub(r'\x1b\[[?0-9;]*$', '', data.decode('utf-8', errors='ignore'))
+    chunks = re.split(r'(\x1b\[[?0-9;]*[A-Za-z])', text)
     for chunk in chunks:
         if chunk.startswith('\x1b['):
             match = re.fullmatch(r'\x1b\[([?0-9;]*)([A-Za-z])', chunk)
@@ -271,5 +270,8 @@ def case(mode):
             os.close(master)
             os.close(slave)
 
-for mode in ([os.environ['SBOARD_PTY_CASE']] if 'SBOARD_PTY_CASE' in os.environ else ['TERM'] if PROBE is None else ['TERM', 'INT', 'HUP', 'q', 'scan-panic', 'error', 'hook', 'dumb', 'stdin', 'idle', 'color-empty', 'color-off', 'unwatched', 'resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure', 'cli-termios']):
-    case(mode)
+if __name__ == '__main__':
+    BINARY = str(Path(sys.argv[1]).resolve())
+    PROBE = str(Path(sys.argv[2]).resolve()) if len(sys.argv) > 2 else None
+    for mode in ([os.environ['SBOARD_PTY_CASE']] if 'SBOARD_PTY_CASE' in os.environ else ['TERM'] if PROBE is None else ['TERM', 'INT', 'HUP', 'q', 'scan-panic', 'error', 'hook', 'dumb', 'stdin', 'idle', 'color-empty', 'color-off', 'unwatched', 'resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure', 'cli-termios']):
+        case(mode)

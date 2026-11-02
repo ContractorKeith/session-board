@@ -640,3 +640,18 @@ fn attention_reflects_read_marks_on_the_next_frame() {
     );
     assert!(frame(&app, 100, 30).contains(&format!("{} need you", before - 1)));
 }
+
+#[test]
+fn pty_screen_parser_handles_partial_escape_sequences() {
+    let output = std::process::Command::new("python3")
+        .arg("tests/terminal_screen.py")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
