@@ -94,7 +94,12 @@ fn list_json_golden() {
     let mut output = Vec::new();
     cli::list(&mut output, &projects, true).unwrap();
     let actual = String::from_utf8(output).unwrap();
-    assert_eq!(actual, fs::read_to_string("fixtures/list.json").unwrap());
+    let expected: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string("tests/snapshots/list.json").unwrap()).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&actual).unwrap(),
+        expected
+    );
 }
 #[test]
 fn status_thresholds_and_first_match_wins() {
@@ -132,7 +137,10 @@ fn status_thresholds_and_first_match_wins() {
 }
 #[test]
 fn attention_filters_read_marks_archives_and_ordering() {
-    let mut state = State::default();
+    let mut state = State {
+        first_seen: Some(0),
+        ..Default::default()
+    };
     state.read.insert("codex:done".into(), NOW);
     let mut p = projects();
     cli::filter(

@@ -41,30 +41,87 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect, now: i64) {
     let mut items = vec![];
     for project in &app.projects {
         let folded = app.folded.contains(&project.root);
-        items.push(ListItem::new(format!(
-            "{} {} ({})",
-            if folded { "▸" } else { "▾" },
-            project.name,
-            project.sessions.len()
-        )));
+        let suffix = format!(
+            "{}{}{}{}",
+            if project.pinned { " [pinned]" } else { "" },
+            if project.tags.is_empty() {
+                String::new()
+            } else {
+                format!(" #{}", project.tags.join(" #"))
+            },
+            if project.unread_count > 0 {
+                format!(" •{}", project.unread_count)
+            } else {
+                String::new()
+            },
+            if project.archived { " [archived]" } else { "" }
+        );
+        let muted = project.archived
+            || project.sessions.is_empty()
+            || app.organize.missing_projects.contains(&project.root);
+        let style = if app.color && muted {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default()
+        };
+        items.push(
+            ListItem::new(format!(
+                "{} {} ({}){}",
+                if folded { "▸" } else { "▾" },
+                project.name,
+                project.sessions.len(),
+                suffix
+            ))
+            .style(style),
+        );
         if !folded {
             for session in &project.sessions {
                 let (glyph, _, color) = status(session.status);
-                let style = if app.color {
+                let archived = project.archived
+                    || app.organize.state.archived.contains(&session.id)
+                    || app
+                        .organize
+                        .state
+                        .archived
+                        .contains(&session.project_root.to_string_lossy().into_owned());
+                let muted = archived
+                    || app
+                        .organize
+                        .missing_projects
+                        .contains(&session.project_root);
+                let style = if app.color && muted {
+                    Style::default().fg(Color::DarkGray)
+                } else if app.color {
                     Style::default().fg(color)
                 } else {
                     Style::default()
                 };
-                items.push(ListItem::new(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(glyph, style),
-                    Span::raw(format!(
-                        " {:<11} {:>3}  {}",
-                        agent(session.agent),
-                        age(now, session.last_activity_at),
-                        session.title
-                    )),
-                ])));
+                items.push(
+                    ListItem::new(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(glyph, style),
+                        Span::raw(if app.organize.state.unread(session) {
+                            "•"
+                        } else {
+                            ""
+                        }),
+                        Span::raw(format!(
+                            " {:<11} {:>3}  {}",
+                            agent(session.agent),
+                            age(now, session.last_activity_at),
+                            format_args!(
+                                "{}{}",
+                                session.title,
+                                if archived { " [archived]" } else { "" }
+                            )
+                        )),
+                    ]))
+                    .style(if muted && app.color {
+                        Style::default().fg(Color::DarkGray)
+                    } else {
+                        Style::default()
+                    }),
+                );
             }
         }
     }

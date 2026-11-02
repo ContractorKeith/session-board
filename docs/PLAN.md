@@ -153,6 +153,7 @@ Status from the transcript tail, first match wins:
 
 Unread is state, not status: set when a session's `last_activity_at` advances while it is not
 the selected row, cleared when selected or marked. Attention = waiting, error, or done-and-unread.
+Without a read mark, a session is unread only when its activity is newer than `first_seen`, which is written on the first state save; before that, all sessions are read.
 
 State file (`~/.local/state/sboard/state.toml`): `pins = [root]`, `tags = { root = [tag] }`,
 `archived = [root or session id]`, `read = { session_id = last_activity_at }`. Written with a

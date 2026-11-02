@@ -64,5 +64,6 @@ pub(crate) fn write_toml(path: &Path, value: &impl Serialize) -> io::Result<()> 
     temporary
         .persist(&target)
         .map_err(|error| at(&target, error.error))?;
+    fs::File::open(parent)?.sync_all()?;
     Ok(())
 }

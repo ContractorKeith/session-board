@@ -58,6 +58,8 @@ fn run(cli: Cli) -> io::Result<i32> {
             status,
             agent,
             all,
+            sort,
+            group,
         }) => {
             let outcome = pipeline::run(
                 &mut ProjectRoots::default(),
@@ -66,6 +68,9 @@ fn run(cli: Cli) -> io::Result<i32> {
                     status,
                     agent,
                     all,
+                    sort,
+                    group,
+                    show_archived: false,
                 },
             )?;
             for warning in &outcome.scan.warnings {
@@ -73,9 +78,9 @@ fn run(cli: Cli) -> io::Result<i32> {
             }
             let mut out = io::stdout().lock();
             if json && matches!(status, Some(cli::StatusFilter::Attention)) {
-                cli::attention_json(&mut out, &outcome.scan.projects)?;
+                cli::attention_json(&mut out, &outcome.scan.projects, &outcome.state)?;
             } else {
-                cli::list(&mut out, &outcome.scan.projects, json)?;
+                cli::list_with_state(&mut out, &outcome.scan.projects, json, &outcome.state)?;
             }
             out.flush()?;
             Ok(outcome.exit_code)

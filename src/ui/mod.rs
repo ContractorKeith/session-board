@@ -1,11 +1,15 @@
 mod attention;
 mod detail;
+mod input;
 mod open;
+mod organize;
 mod tree;
 
 use crate::watch::Scans;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{
+        DisableBracketedPaste, EnableBracketedPaste, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    },
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -30,11 +34,13 @@ use std::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Row {
     Project(PathBuf),
-    Session(PathBuf),
+    Session(PathBuf, PathBuf),
 }
 
 pub struct App {
     pub state: session_board::state::State,
+    pub open: open::Open,
+    pub organize: organize::Organize,
     pub attention_focus: bool,
     pub attention_selected: usize,
     pub attention_path: Option<PathBuf>,
@@ -59,12 +65,19 @@ pub enum Action {
     Open,
     New,
     Worktree,
+    Launch {
+        project: PathBuf,
+        agent: session_board::model::Agent,
+        branch: Option<String>,
+    },
     Quit,
 }
 impl App {
     pub fn new(color: bool) -> Self {
         Self {
             state: Default::default(),
+            open: open::Open::default(),
+            organize: organize::Organize::default(),
             attention_focus: false,
             attention_selected: 0,
             attention_path: None,
@@ -92,7 +105,7 @@ impl App {
         let result = f();
         session_board::launch::restore_terminal();
         terminal::enable_raw_mode()?;
-        execute!(io::stdout(), EnterAlternateScreen)?;
+        execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
         execute!(
             io::stdout(),
             terminal::Clear(terminal::ClearType::All),
@@ -110,7 +123,7 @@ impl App {
                     project
                         .sessions
                         .iter()
-                        .map(|s| Row::Session(s.transcript_path.clone())),
+                        .map(|s| Row::Session(project.root.clone(), s.transcript_path.clone())),
                 );
             }
         }
@@ -119,37 +132,64 @@ impl App {
     pub fn session(&self) -> Option<&Session> {
         if self.attention_focus && !self.attention_collapsed {
             return self.attention_path.as_ref().and_then(|path| {
-                self.projects
+                self.organize
+                    .projects
                     .iter()
                     .flat_map(|p| &p.sessions)
                     .find(|s| &s.transcript_path == path)
             });
         }
         match self.rows().get(self.selected)? {
-            Row::Session(path) => self
+            Row::Session(root, path) => self
                 .projects
                 .iter()
-                .flat_map(|p| &p.sessions)
-                .find(|s| &s.transcript_path == path),
+                .find(|p| &p.root == root)
+                .and_then(|p| p.sessions.iter().find(|s| &s.transcript_path == path)),
             _ => None,
         }
     }
     pub fn replace(&mut self, projects: Vec<Project>) {
         let selected = self.rows().get(self.selected).cloned();
-        self.projects = projects;
+        if let Some(path) = self.organize.path.clone() {
+            self.load_state(path);
+        }
+        self.organize.projects = projects;
+        self.project_organization();
         let rows = self.rows();
         self.selected = selected
             .and_then(|row| rows.iter().position(|r| r == &row))
             .unwrap_or(self.selected.min(rows.len().saturating_sub(1)));
         self.reconcile_attention();
+        self.mark_selected(false);
     }
+
     pub fn key(&mut self, key: KeyEvent) -> Action {
-        if key.kind == KeyEventKind::Release {
+        if key.kind == KeyEventKind::Release || key.modifiers.contains(KeyModifiers::ALT) {
             return Action::None;
+        }
+        self.message.clear();
+        if self.open.active() {
+            let mut open = std::mem::take(&mut self.open);
+            let action = open.key(self, key).unwrap_or(Action::None);
+            self.open = open;
+            return action;
+        }
+        if self.organize.prompt.is_some() {
+            if key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            {
+                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    self.organize.prompt = None;
+                }
+                return Action::None;
+            }
+            return self.organize_key(key.code).unwrap_or(Action::None);
         }
         if key.code == KeyCode::Char('q')
             || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
         {
+            self.flush_read_marks(true);
             return Action::Quit;
         }
         if key.code == KeyCode::Char('?') {
@@ -160,8 +200,15 @@ impl App {
             return Action::None;
         }
         if let Some(action) = self.attention_key(key.code) {
+            self.mark_selected(false);
+            self.reconcile_attention();
             return action;
         }
+        if let Some(action) = self.organize_key(key.code) {
+            self.mark_selected(false);
+            return action;
+        }
+        let before = self.rows().get(self.selected).cloned();
         let rows = self.rows();
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
@@ -181,11 +228,7 @@ impl App {
                 if let Some(row) = rows.get(self.selected) {
                     let root = match row {
                         Row::Project(root) => Some(root.clone()),
-                        Row::Session(path) => self
-                            .projects
-                            .iter()
-                            .find(|p| p.sessions.iter().any(|s| &s.transcript_path == path))
-                            .map(|p| p.root.clone()),
+                        Row::Session(root, _) => Some(root.clone()),
                     };
                     if let Some(root) = root {
                         if matches!(key.code, KeyCode::Char('h') | KeyCode::Left) {
@@ -210,25 +253,35 @@ impl App {
             }
             _ => {}
         }
+        if before != self.rows().get(self.selected).cloned() {
+            self.mark_selected(false);
+        }
         Action::None
     }
     pub fn status_text(&self) -> String {
-        let message = if self.message.is_empty() {
-            &self.summary
-        } else {
-            &self.message
-        };
+        if let Some(prompt) = &self.organize.prompt {
+            return format!("Tags: {} (Enter save, Esc cancel)", prompt.text);
+        }
+        if let Some(text) = self.open.text() {
+            return text;
+        }
         let warnings: Vec<_> = self
             .watch_warnings
             .iter()
             .chain(&self.scan_warnings)
             .chain(&self.notify_warnings)
             .collect();
+        let message = if self.message.is_empty() {
+            &self.summary
+        } else {
+            &self.message
+        };
         match warnings.first() {
-            Some(first) => format!("{} | {} warnings: {first}", message, warnings.len()),
+            Some(first) => format!("{message} | {} warnings: {first}", warnings.len()),
             None => message.clone(),
         }
     }
+
     pub fn request_scan(&mut self, scans: &Scans) {
         if let Err(std::sync::mpsc::TrySendError::Disconnected(_)) = scans.requests.try_send(()) {
             self.message = "scan worker died; restart sboard".into();
@@ -240,7 +293,7 @@ impl App {
         let vertical =
             Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(frame.area());
         if self.help {
-            frame.render_widget(Paragraph::new("Tab  attention / tree\nAttention focus: h / l collapse / expand; j / k move\nAttention focus: Enter opens selected session\nj / k / ↑ / ↓  move\nPgUp / PgDn / Home / End  page / ends\nTree focus: h / l / ← / → fold / unfold project\nEnter open · n new · w new in worktree\nr  rescan\n?  toggle help\nq / Ctrl-C  quit").block(Block::default().borders(Borders::ALL).title("Help")), vertical[0]);
+            frame.render_widget(Paragraph::new("Tab  attention / tree\nAttention focus: h / l collapse / expand; j / k move\nAttention focus: Enter opens selected session\nj / k / ↑ / ↓  move\nPgUp / PgDn / Home / End  page / ends\nTree focus: h / l / ← / → fold / unfold project\nEnter open · n new · w new in worktree\np pin · t tags · m read · a archive · A archived\ns sort · g group by tag / project\nr  rescan\n?  toggle help\nq / Ctrl-C  quit").block(Block::default().borders(Borders::ALL).title("Help")), vertical[0]);
         } else {
             let content = Layout::vertical([
                 Constraint::Length(attention::height(
@@ -289,7 +342,12 @@ impl Drop for TerminalGuard {
 fn restore() {
     let _ = terminal::disable_raw_mode();
     session_board::launch::restore_terminal();
-    let _ = execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
+    let _ = execute!(
+        io::stdout(),
+        DisableBracketedPaste,
+        LeaveAlternateScreen,
+        crossterm::cursor::Show
+    );
 }
 pub fn color_enabled(value: Option<&std::ffi::OsStr>) -> bool {
     value.is_none_or(std::ffi::OsStr::is_empty)
@@ -319,6 +377,7 @@ pub fn run() -> io::Result<i32> {
     let result = terminal_session(|terminal| {
         let scans = Scans::start()?;
         let mut app = App::new(color_enabled(std::env::var_os("NO_COLOR").as_deref()));
+        app.load_state(session_board::state::State::path()?);
         event_loop(terminal, &mut app, &scans, &signal)
     });
     for id in registrations {
@@ -345,7 +404,7 @@ pub(crate) fn terminal_session(
     }));
     let _guard = TerminalGuard;
     terminal::enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen)?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
     let mut terminal =
         ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
     operation(&mut terminal)
@@ -357,27 +416,7 @@ fn event_loop(
     scans: &Scans,
     signal: &AtomicUsize,
 ) -> io::Result<()> {
-    // Crossterm 0.29 can spin internally on tty EOF/EIO; keep signals and tty
-    // closure observable on main, with no outstanding read while a child runs.
-    let (poll, requests) = std::sync::mpsc::channel();
-    let (events, input) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        while requests.recv().is_ok() {
-            let result = event::poll(Duration::from_millis(50)).and_then(|ready| {
-                if ready {
-                    event::read().map(Some)
-                } else {
-                    Ok(None)
-                }
-            });
-            let failed = result.is_err();
-            if events.send(result).is_err() || failed {
-                break;
-            }
-        }
-    });
-    let mut pending = false;
-    let mut open = open::Open::default();
+    let reader = input::Reader::start();
     let mut transitions = session_board::notify::Transitions::default();
     let mut desktop = session_board::notify::Delivery::desktop()?;
     let mut dirty = true;
@@ -385,6 +424,7 @@ fn event_loop(
     let mut next_age = Instant::now();
     loop {
         if signal.load(Ordering::Relaxed) != 0 {
+            app.flush_read_marks(true);
             return Ok(());
         }
         if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
@@ -415,19 +455,11 @@ fn event_loop(
                 Ok(result) => {
                     app.summary = format!("{} projects", result.projects.len());
                     app.scan_warnings = result.warnings;
+                    app.organize.missing_projects = result.missing_projects.into_iter().collect();
                     if let Ok((config, _)) = session_board::config::Config::path()
                         .and_then(|path| session_board::config::Config::load(&path))
                     {
                         transitions.scan(&result.projects, config.notify, &mut desktop);
-                    }
-                    match session_board::state::State::path()
-                        .and_then(|path| session_board::state::State::load(&path))
-                    {
-                        Ok((state, warnings)) => {
-                            app.state = state;
-                            app.scan_warnings.extend(warnings);
-                        }
-                        Err(error) => app.scan_warnings.push(format!("state: {error}")),
                     }
                     app.replace(result.projects);
                 }
@@ -441,14 +473,12 @@ fn event_loop(
             }
             dirty = true;
         }
+        app.flush_read_marks(false);
         if Instant::now() >= next_age {
             dirty = true;
             next_age = Instant::now() + Duration::from_secs(1);
         }
         if dirty {
-            if let Some(text) = open.text() {
-                app.message = text;
-            }
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -456,43 +486,49 @@ fn event_loop(
             terminal.draw(|frame| app.render(frame, now))?;
             dirty = false;
         }
-        // One outstanding read: the reader waits while a child owns the terminal.
-        if !pending {
-            poll.send(())
-                .map_err(|_| io::Error::other("terminal reader stopped"))?;
-            pending = true;
-        }
-        let event = match input.recv_timeout(Duration::from_millis(50)) {
-            Ok(result) => {
-                pending = false;
-                result?
-            }
+        let received = match reader.events.recv_timeout(Duration::from_millis(50)) {
+            Ok(result) => result?,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
             Err(_) => return Err(io::Error::other("terminal reader stopped")),
         };
-        match event {
-            Some(Event::Key(key)) if key.kind != KeyEventKind::Release => {
-                app.message.clear();
-                if !open.key(app, key, terminal)? {
-                    match app.key(key) {
-                        Action::Quit => return Ok(()),
-                        Action::Rescan => app.request_scan(scans),
-                        Action::None => {}
-                        action => open.action(app, action, terminal)?,
-                    }
-                }
-                if session_board::launch::take_child_interrupt() {
-                    let _ = signal.compare_exchange(
-                        signal_hook::consts::SIGINT as usize,
-                        0,
-                        Ordering::SeqCst,
-                        Ordering::SeqCst,
-                    );
-                }
-                dirty = true;
+        let (event, received_at) = match received {
+            input::Input::Event(event, at) => (event, at),
+            input::Input::Idle(at) => {
+                dirty |= app.input_idle(at);
+                continue;
             }
-            Some(Event::Resize(_, _)) => dirty = true,
-            _ => {}
+            input::Input::Paused | input::Input::Resumed => continue,
+        };
+        {
+            match app.event(event, received_at) {
+                Action::Quit => return Ok(()),
+                Action::Rescan => app.request_scan(scans),
+                Action::None => {}
+                action => {
+                    let transfer = matches!(action, Action::Open | Action::Launch { .. });
+                    if transfer {
+                        reader.pause()?;
+                        app.discard_input();
+                    }
+                    let mut open = std::mem::take(&mut app.open);
+                    let result = open.action(app, action, terminal);
+                    app.open = open;
+                    if transfer {
+                        reader.resume()?;
+                        app.discard_input();
+                    }
+                    result?;
+                }
+            }
+            if session_board::launch::take_child_interrupt() {
+                let _ = signal.compare_exchange(
+                    signal_hook::consts::SIGINT as usize,
+                    0,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
+            }
+            dirty = true;
         }
     }
 }

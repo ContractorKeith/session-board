@@ -34,7 +34,7 @@ fn fixture_app() -> App {
     let mut result = scan::scan(&registry, &Config::default(), &state, |cwd| cwd.to_owned());
     cli::filter(&mut result.projects, &state, None, None, None, false);
     let mut app = App::new(false);
-    app.message = format!("{} projects", result.projects.len());
+    app.summary = format!("{} projects", result.projects.len());
     app.replace(result.projects);
     app
 }
@@ -592,8 +592,707 @@ fn script_pty_terminal_hygiene_and_worker_recovery() {
 }
 
 #[test]
-fn attention_focus_collapse_empty_and_cli_order() {
+fn organization_keys_persist_and_selection_clears_unread() {
+    use session_board::scan::{Group, Sort};
+    let temp = tempfile::tempdir().unwrap();
     let mut app = fixture_app();
+    app.load_state(temp.path().join("state.toml"));
+    let root = app.projects[0].root.clone();
+    assert_eq!(key(&mut app, KeyCode::Char('p')), Action::Rescan);
+    assert!(
+        State::load(app.organize.path.as_ref().unwrap())
+            .unwrap()
+            .0
+            .pins
+            .contains(&root)
+    );
+    key(&mut app, KeyCode::Char('p'));
+    assert!(
+        !State::load(app.organize.path.as_ref().unwrap())
+            .unwrap()
+            .0
+            .pins
+            .contains(&root)
+    );
+    key(&mut app, KeyCode::Char('p'));
+    key(&mut app, KeyCode::Char('t'));
+    for c in "client, urgent".chars() {
+        key(&mut app, KeyCode::Char(c));
+    }
+    assert!(frame(&app, 100, 30).contains("Tags: client, urgent"));
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        State::load(app.organize.path.as_ref().unwrap())
+            .unwrap()
+            .0
+            .tags[&root],
+        ["client", "urgent"]
+    );
+    key(&mut app, KeyCode::Char('m'));
+    let session = app.projects[0].sessions[0].clone();
+    assert_eq!(app.state.read[&session.id], session.last_activity_at);
+    key(&mut app, KeyCode::Char('a'));
+    assert!(!app.projects.iter().any(|p| p.root == root));
+    key(&mut app, KeyCode::Char('A'));
+    assert!(app.projects.iter().any(|p| p.root == root && p.archived));
+    assert!(frame(&app, 100, 30).contains("[archived]"));
+    app.selected = app
+        .rows()
+        .iter()
+        .position(|r| r == &ui::Row::Project(root.clone()))
+        .unwrap();
+    key(&mut app, KeyCode::Char('a'));
+    key(&mut app, KeyCode::Down);
+    let id = app.session().unwrap().id.clone();
+    key(&mut app, KeyCode::Char('a'));
+    assert!(app.state.archived.contains(&id));
+    key(&mut app, KeyCode::Char('a'));
+    key(&mut app, KeyCode::Char('s'));
+    assert_eq!(app.state.sort, Sort::Attention);
+    key(&mut app, KeyCode::Char('g'));
+    assert_eq!(app.state.group, Group::Tag);
+    assert!(app.projects.iter().any(|p| p.name == "client"));
+    key(&mut app, KeyCode::Char('g'));
+    let mut raw = app.organize.projects.clone();
+    for p in &mut raw {
+        for s in &mut p.sessions {
+            s.last_activity_at += 1;
+        }
+    }
+    app.selected = 0;
+    app.replace(raw.clone());
+    assert!(app.projects.iter().any(|p| p.unread_count > 0));
+    app.selected = app
+        .rows()
+        .iter()
+        .position(|r| matches!(r, ui::Row::Session(_, _)))
+        .unwrap()
+        - 1;
+    key(&mut app, KeyCode::Down);
+    let session = app.session().unwrap().clone();
+    assert!(!app.state.unread(&session));
+    app.replace(raw);
+    assert!(!app.state.unread(app.session().unwrap()));
+    let mut restarted = App::new(false);
+    restarted.load_state(temp.path().join("state.toml"));
+    assert!(restarted.state.pins.contains(&root));
+    assert_eq!(restarted.state.tags[&root], ["client", "urgent"]);
+    assert_eq!(restarted.state.sort, Sort::Attention);
+    assert!(restarted.state.show_archived);
+}
+
+#[test]
+fn organized_tree_snapshot() {
+    let mut app = fixture_app();
+    let root = app.projects[0].root.clone();
+    app.state.first_seen = Some(0);
+    app.state.pins.push(root.clone());
+    app.state
+        .tags
+        .insert(root, vec!["client".into(), "urgent".into()]);
+    app.state
+        .archived
+        .push(app.projects[0].sessions[1].id.clone());
+    app.state.show_archived = true;
+    app.project_organization();
+    let actual = frame(&app, 160, 22);
+    assert!(actual.contains("[pinned] #client #urgent"));
+    assert!(actual.contains("[archived]"));
+    assert!(actual.contains("•13"));
+    if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
+        fs::write("tests/snapshots/organized.txt", &actual).unwrap();
+    }
+    assert_eq!(
+        actual,
+        fs::read_to_string("tests/snapshots/organized.txt").unwrap()
+    );
+}
+
+#[test]
+fn missing_pinned_project_with_historical_sessions_is_grey() {
+    let mut app = fixture_app();
+    app.color = true;
+    let root = app.projects[0].root.clone();
+    app.state.pins.push(root.clone());
+    app.organize.missing_projects.insert(root);
+    app.project_organization();
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal.draw(|f| app.render(f, NOW)).unwrap();
+    let tree_y = frame(&app, 100, 30)
+        .lines()
+        .position(|line| line.contains("Projects"))
+        .unwrap() as u16;
+    assert_eq!(
+        terminal.backend().buffer()[(4, tree_y + 1)].fg,
+        ratatui::style::Color::DarkGray
+    );
+    assert_eq!(
+        terminal.backend().buffer()[(4, tree_y + 2)].fg,
+        ratatui::style::Color::DarkGray
+    );
+}
+
+#[test]
+fn issue69_two_apps_keep_remote_removals() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("state.toml");
+    let mut a = fixture_app();
+    a.load_state(path.clone());
+    key(&mut a, KeyCode::Char('p'));
+    let root = a.projects[0].root.clone();
+    let mut b = fixture_app();
+    b.load_state(path.clone());
+    b.project_organization();
+    key(&mut a, KeyCode::Char('p'));
+    key(&mut b, KeyCode::Char('t'));
+    for c in "client".chars() {
+        key(&mut b, KeyCode::Char(c));
+    }
+    key(&mut b, KeyCode::Enter);
+    let saved = State::load(&path).unwrap().0;
+    assert!(!saved.pins.contains(&root));
+    assert_eq!(saved.tags[&root], ["client"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn issue71_failed_save_survives_rescan_with_error_message() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("state");
+    fs::create_dir(&dir).unwrap();
+    let path = dir.join("state.toml");
+    let mut app = fixture_app();
+    app.load_state(path);
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+    key(&mut app, KeyCode::Char('p'));
+    let projects = app.organize.projects.clone();
+    app.replace(projects);
+    assert!(app.projects[0].pinned);
+    assert!(
+        app.status_text().contains("state:"),
+        "{}",
+        app.status_text()
+    );
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+#[test]
+fn issue72_paste_and_chords_never_dispatch_organizing_keys() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = fixture_app();
+    app.load_state(temp.path().join("state.toml"));
+    key(&mut app, KeyCode::Char('t'));
+    app.event(
+        crossterm::event::Event::Paste("foo,bar\np\nq".into()),
+        Instant::now(),
+    );
+    app.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::ALT));
+    assert_eq!(key(&mut app, KeyCode::Enter), Action::Rescan);
+    let saved = State::load(app.organize.path.as_ref().unwrap()).unwrap().0;
+    assert_eq!(saved.tags[&app.projects[0].root], ["barpq", "foo"]);
+    assert!(saved.pins.is_empty());
+    assert!(saved.archived.is_empty());
+    key(&mut app, KeyCode::Char('t'));
+    assert_eq!(
+        app.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        Action::None
+    );
+    assert!(app.organize.prompt.is_none());
+}
+
+#[test]
+fn issue74_repeated_session_retains_group_identity() {
+    let mut app = fixture_app();
+    let root = app.projects[0].root.clone();
+    app.state
+        .tags
+        .insert(root, vec!["alpha".into(), "beta".into()]);
+    key(&mut app, KeyCode::Char('g'));
+    let beta = app
+        .projects
+        .iter()
+        .find(|p| p.name == "beta")
+        .unwrap()
+        .root
+        .clone();
+    app.selected = app
+        .rows()
+        .iter()
+        .position(|r| matches!(r,ui::Row::Project(p) if p==&beta))
+        .unwrap()
+        + 1;
+    let selected = app.rows()[app.selected].clone();
+    key(&mut app, KeyCode::Char('p'));
+    assert_eq!(app.rows()[app.selected], selected);
+    key(&mut app, KeyCode::Left);
+    assert!(app.folded.contains(&beta));
+}
+
+#[test]
+fn issue76_selection_read_marks_are_debounced_and_quit_flushes() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = fixture_app();
+    let path = temp.path().join("state.toml");
+    app.load_state(path.clone());
+    key(&mut app, KeyCode::Down);
+    let first = app.session().unwrap().id.clone();
+    assert!(app.state.read.contains_key(&first));
+    assert!(!path.exists());
+    key(&mut app, KeyCode::Down);
+    app.flush_read_marks(false);
+    assert!(!path.exists());
+    key(&mut app, KeyCode::Char('q'));
+    assert!(State::load(&path).unwrap().0.read.contains_key(&first));
+}
+
+#[cfg(unix)]
+#[test]
+fn issue70_pin_key_removes_tilde_dotdot_and_symlink_spellings() {
+    let home = fs::canonicalize(session_board::cli::home().unwrap()).unwrap();
+    let temp = tempfile::tempdir_in(&home).unwrap();
+    let root = temp.path().join("project");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir(temp.path().join("other")).unwrap();
+    let alias = temp.path().join("alias");
+    std::os::unix::fs::symlink(&root, &alias).unwrap();
+    let tilde = std::path::PathBuf::from("~").join(root.strip_prefix(&home).unwrap());
+    let seed = State {
+        pins: vec![tilde, alias, temp.path().join("other/../project/")],
+        ..Default::default()
+    };
+    let path = temp.path().join("state.toml");
+    fs::write(&path, toml::to_string(&seed).unwrap()).unwrap();
+    let mut app = fixture_app();
+    let mut raw = app.organize.projects.clone();
+    for p in &mut raw {
+        p.root = root.clone();
+        for s in &mut p.sessions {
+            s.project_root = root.clone();
+        }
+    }
+    app.load_state(path.clone());
+    app.replace(raw);
+    assert!(app.projects[0].pinned);
+    key(&mut app, KeyCode::Char('p'));
+    assert!(!app.projects[0].pinned);
+    assert!(State::load(&path).unwrap().0.pins.is_empty());
+}
+
+#[test]
+fn issue71_save_warnings_and_outcome_survive_scans() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("state.toml");
+    fs::write(&path, "[broken").unwrap();
+    let mut app = fixture_app();
+    app.load_state(path);
+    key(&mut app, KeyCode::Char('p'));
+    app.summary = "scan finished".into();
+    app.replace(app.organize.projects.clone());
+    assert!(app.status_text().contains("corrupt state preserved"));
+    key(&mut app, KeyCode::Char('?'));
+    assert!(!app.status_text().contains("corrupt state preserved"));
+}
+
+#[test]
+fn issue76_modes_suffix_order_and_empty_existing_root_style() {
+    let mut app = fixture_app();
+    app.color = true;
+    let root = app.projects[0].root.clone();
+    app.state.first_seen = Some(0);
+    app.state.pins.push(root.clone());
+    app.state.tags.insert(root, vec!["long".repeat(100)]);
+    app.state.sort = session_board::scan::Sort::Attention;
+    app.state.show_archived = true;
+    app.project_organization();
+    let text = frame(&app, 160, 22);
+    assert!(text.contains("Projects · attention"));
+    assert!(text.contains("[archived shown]"));
+    assert!(text.contains("•14 [pinned] #"));
+    assert!(text.contains("User placeholder •"));
+    app.organize.projects[0].sessions.clear();
+    app.project_organization();
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal.draw(|f| app.render(f, NOW)).unwrap();
+    assert_eq!(
+        terminal.backend().buffer()[(4, 1)].fg,
+        ratatui::style::Color::Reset
+    );
+}
+
+#[test]
+fn issue77_selected_session_update_stays_read_through_rescan() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = fixture_app();
+    app.load_state(temp.path().join("state.toml"));
+    State {
+        first_seen: Some(0),
+        ..Default::default()
+    }
+    .save(app.organize.path.as_ref().unwrap())
+    .unwrap();
+    app.load_state(app.organize.path.clone().unwrap());
+    key(&mut app, KeyCode::Down);
+    let selected = app.session().unwrap().id.clone();
+    let mut raw = app.organize.projects.clone();
+    for p in &mut raw {
+        for s in &mut p.sessions {
+            s.last_activity_at += 1;
+        }
+    }
+    app.replace(raw);
+    assert_eq!(app.session().unwrap().id, selected);
+    assert!(!app.state.unread(app.session().unwrap()));
+    assert!(
+        app.projects
+            .iter()
+            .flat_map(|p| &p.sessions)
+            .any(|s| s.id != selected && app.state.unread(s))
+    );
+}
+
+#[test]
+fn issue76_explicit_read_corrects_a_future_mark() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = fixture_app();
+    let path = temp.path().join("state.toml");
+    let id = app.projects[0].sessions[0].id.clone();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    fs::write(
+        &path,
+        toml::to_string(&State {
+            read: std::collections::BTreeMap::from([(id.clone(), now + 3600)]),
+            ..Default::default()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    app.load_state(path.clone());
+    app.selected = 1;
+    key(&mut app, KeyCode::Char('m'));
+    assert_eq!(
+        State::load(&path).unwrap().0.read[&id],
+        app.session().unwrap().last_activity_at
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn issue96_pin_key_removes_alias_after_its_target_disappears() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("project");
+    fs::create_dir(&root).unwrap();
+    let root = fs::canonicalize(root).unwrap();
+    let alias = temp.path().join("alias");
+    std::os::unix::fs::symlink(&root, &alias).unwrap();
+    let path = temp.path().join("state.toml");
+    fs::write(
+        &path,
+        toml::to_string(&State {
+            pins: vec![alias],
+            ..Default::default()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let mut app = fixture_app();
+    let mut raw = app.organize.projects.clone();
+    for p in &mut raw {
+        p.root = root.clone();
+        for s in &mut p.sessions {
+            s.project_root = root.clone();
+        }
+    }
+    app.load_state(path.clone());
+    app.replace(raw);
+    assert!(app.projects[0].pinned);
+    fs::remove_dir(&root).unwrap();
+    key(&mut app, KeyCode::Char('p'));
+    let saved: State = toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert!(
+        saved.pins.is_empty(),
+        "dangling alias pin survived: {:?}",
+        saved.pins
+    );
+}
+
+#[test]
+fn issue94_paste_burst_uses_the_live_event_router() {
+    use crossterm::event::Event;
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = fixture_app();
+    app.load_state(temp.path().join("state.toml"));
+    let now = Instant::now();
+    assert_eq!(app.event(Event::Paste("foo".into()), now), Action::None);
+    for c in ['p', 'q'] {
+        assert_eq!(
+            app.event(
+                Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+                now + Duration::from_millis(1)
+            ),
+            Action::None
+        );
+    }
+    assert!(!app.projects[0].pinned);
+    assert!(!app.organize.path.as_ref().unwrap().exists());
+}
+
+#[test]
+fn issue94_prompt_paste_and_stray_terminators_share_the_live_router() {
+    use crossterm::event::Event;
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = fixture_app();
+    app.load_state(temp.path().join("state.toml"));
+    let now = Instant::now();
+    assert_eq!(
+        app.event(
+            Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE)),
+            now
+        ),
+        Action::None
+    );
+    app.event(Event::Paste("foo,bar\np\nq".into()), now);
+    for code in [
+        KeyCode::Esc,
+        KeyCode::Char('['),
+        KeyCode::Char('2'),
+        KeyCode::Char('0'),
+        KeyCode::Char('1'),
+        KeyCode::Char('~'),
+    ] {
+        assert_eq!(
+            app.event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), now),
+            Action::None
+        );
+    }
+    assert!(
+        app.organize.prompt.is_some(),
+        "stray terminator cancelled the prompt"
+    );
+    assert_eq!(
+        app.event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            now
+        ),
+        Action::Rescan
+    );
+    let saved = State::load(app.organize.path.as_ref().unwrap()).unwrap().0;
+    assert_eq!(saved.tags[&app.projects[0].root], ["barpq", "foo"]);
+    assert!(saved.pins.is_empty());
+    // Suffix keys of the same paste burst cannot act after Enter closes the prompt.
+    assert_eq!(
+        app.event(
+            Event::Key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE)),
+            now
+        ),
+        Action::None
+    );
+    assert!(!app.projects[0].pinned);
+    // Only a quiet boundary observed by the reader ends the paste burst.
+    app.input_idle(now + Duration::from_millis(51));
+    assert_eq!(
+        app.event(
+            Event::Key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE)),
+            now + Duration::from_millis(51)
+        ),
+        Action::Rescan
+    );
+    assert!(app.projects[0].pinned);
+}
+
+#[test]
+fn issue94_real_escape_still_cancels_after_sequence_timeout() {
+    use crossterm::event::Event;
+    let mut app = fixture_app();
+    key(&mut app, KeyCode::Char('t'));
+    let now = Instant::now();
+    app.event(
+        Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        now,
+    );
+    assert!(!app.expire_input(now + Duration::from_millis(49)));
+    assert!(app.expire_input(now + Duration::from_millis(50)));
+    assert!(app.organize.prompt.is_none());
+}
+
+#[test]
+fn issue94_partial_terminator_cannot_dispatch_a_paste_suffix() {
+    use crossterm::event::Event;
+    let mut app = fixture_app();
+    let now = Instant::now();
+    key(&mut app, KeyCode::Char('t'));
+    app.event(Event::Paste("foo".into()), now);
+    app.event(
+        Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        now,
+    );
+    assert_eq!(
+        app.event(
+            Event::Key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE)),
+            now
+        ),
+        Action::None
+    );
+    assert!(!app.projects[0].pinned);
+}
+
+#[test]
+fn rebased_m3_launch_prompts_use_the_shared_paste_router() {
+    use crossterm::event::Event;
+    use session_board::model::Agent;
+    let mut app = fixture_app();
+    let root = app.projects[0].root.clone();
+    let now = Instant::now();
+    assert_eq!(key(&mut app, KeyCode::Char('n')), Action::New);
+    assert_eq!(key(&mut app, KeyCode::Char('w')), Action::Worktree);
+    app.open.begin(root.clone(), true);
+    app.event(
+        Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+        now,
+    );
+    app.event(Event::Paste("feat/\np\nq".into()), now);
+    app.event(
+        Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+        now,
+    );
+    app.event(
+        Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::ALT)),
+        now,
+    );
+    assert!(
+        app.open.active(),
+        "Alt-Escape must not cancel the branch prompt"
+    );
+    assert!(app.open.text().unwrap().contains("feat/pq"));
+    for code in [
+        KeyCode::Esc,
+        KeyCode::Char('['),
+        KeyCode::Char('2'),
+        KeyCode::Char('0'),
+        KeyCode::Char('1'),
+        KeyCode::Char('~'),
+    ] {
+        app.event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), now);
+    }
+    assert_eq!(
+        app.event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            now
+        ),
+        Action::Launch {
+            project: root,
+            agent: Agent::Codex,
+            branch: Some("feat/pq".into())
+        }
+    );
+    assert!(app.state.pins.is_empty());
+}
+
+#[test]
+fn rebased_m3_agent_picker_does_not_launch_pasted_choices() {
+    use crossterm::event::Event;
+    let mut app = fixture_app();
+    let now = Instant::now();
+    app.open.begin(app.projects[0].root.clone(), false);
+    app.event(Event::Paste("x".into()), now);
+    assert_eq!(
+        app.event(
+            Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+            now
+        ),
+        Action::None
+    );
+    assert!(app.open.active());
+    app.input_idle(now + Duration::from_millis(51));
+    app.event(
+        Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        now + Duration::from_millis(51),
+    );
+    assert!(!app.open.active());
+    assert_eq!(app.message, "launch cancelled");
+}
+
+#[test]
+fn issue101_paste_suffix_stays_inert_without_an_observed_input_gap() {
+    use crossterm::event::Event;
+    let mut app = fixture_app();
+    let now = Instant::now();
+    app.event(Event::Paste("foo".into()), now);
+    for i in 0..100 {
+        assert_eq!(
+            app.event(
+                Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+                now + Duration::from_millis(i * 10)
+            ),
+            Action::None
+        );
+    }
+    assert_eq!(
+        app.event(
+            Event::Key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE)),
+            now + Duration::from_secs(2)
+        ),
+        Action::None
+    );
+    assert!(!app.projects[0].pinned);
+}
+
+#[test]
+fn issue102_prompt_edits_merge_against_tags_present_when_it_opened() {
+    for edited in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("state.toml");
+        let mut app = fixture_app();
+        let root = app.projects[0].root.clone();
+        State {
+            tags: std::collections::BTreeMap::from([(root.clone(), vec!["base".into()])]),
+            ..Default::default()
+        }
+        .save(&path)
+        .unwrap();
+        app.load_state(path.clone());
+        app.project_organization();
+        key(&mut app, KeyCode::Char('t'));
+        let prior = State::load(&path).unwrap().0;
+        let mut external = prior.clone();
+        external
+            .tags
+            .get_mut(&root)
+            .unwrap()
+            .push("external".into());
+        external.save_changes(&path, Some(&prior)).unwrap();
+        app.replace(app.organize.projects.clone());
+        if edited {
+            for c in ", local".chars() {
+                key(&mut app, KeyCode::Char(c));
+            }
+        }
+        key(&mut app, KeyCode::Enter);
+        let saved = State::load(&path).unwrap().0;
+        assert_eq!(
+            saved.tags[&root],
+            if edited {
+                vec!["base", "external", "local"]
+            } else {
+                vec!["base", "external"]
+            }
+        );
+    }
+}
+
+fn attention_fixture_app() -> App {
+    let mut app = fixture_app();
+    app.state.first_seen = Some(0);
+    app.replace(app.organize.projects.clone());
+    app
+}
+#[test]
+fn attention_focus_collapse_empty_and_cli_order() {
+    let mut app = attention_fixture_app();
     let mut cli_projects = app.projects.clone();
     cli::filter(
         &mut cli_projects,
@@ -649,7 +1348,7 @@ fn attention_focus_collapse_empty_and_cli_order() {
 }
 #[test]
 fn attention_overflow_is_bounded_and_navigable() {
-    let mut app = fixture_app();
+    let mut app = attention_fixture_app();
     let mut sample = app.projects[0].sessions[0].clone();
     sample.status = session_board::model::Status::Waiting;
     app.projects[0].sessions = (0..20)
@@ -660,6 +1359,7 @@ fn attention_overflow_is_bounded_and_navigable() {
             s
         })
         .collect();
+    app.replace(app.projects.clone());
     let rendered = frame(&app, 100, 30);
     assert!(rendered.contains("+13 below"));
     assert!(rendered.contains("20 need you"));
@@ -676,7 +1376,7 @@ fn attention_overflow_is_bounded_and_navigable() {
 
 #[test]
 fn attention_reflects_read_marks_on_the_next_frame() {
-    let mut app = fixture_app();
+    let mut app = attention_fixture_app();
     let done = app
         .attention_items()
         .iter()
@@ -714,6 +1414,7 @@ fn pty_screen_parser_handles_partial_escape_sequences() {
 
 fn multi_project_app() -> App {
     let mut app = App::new(false);
+    app.state.first_seen = Some(0);
     app.replace(serde_json::from_str(include_str!("fixtures/attention-projects.json")).unwrap());
     app
 }
@@ -757,7 +1458,7 @@ fn focused_rescan_keeps_highlight_tree_enter_and_next_neighbour_together() {
     assert!(pane_highlight(&app).contains(&target.title));
     assert_eq!(
         app.rows()[app.selected],
-        ui::Row::Session(target.transcript_path.clone())
+        ui::Row::Session(target.project_root.clone(), target.transcript_path.clone())
     );
     assert_eq!(key(&mut app, KeyCode::Enter), Action::Open);
     assert_eq!(
@@ -779,7 +1480,7 @@ fn focused_rescan_keeps_highlight_tree_enter_and_next_neighbour_together() {
 }
 #[test]
 fn small_pane_collapsed_movement_and_folds() {
-    let mut app = fixture_app();
+    let mut app = attention_fixture_app();
     let root = app.projects[0].root.clone();
     app.folded.insert(root.clone());
     key(&mut app, KeyCode::Tab);
@@ -807,7 +1508,10 @@ fn small_pane_collapsed_movement_and_folds() {
     assert_eq!(app.session().unwrap().id, "codex:waiting");
     assert_eq!(
         app.rows()[app.selected],
-        ui::Row::Session(app.session().unwrap().transcript_path.clone())
+        ui::Row::Session(
+            app.session().unwrap().project_root.clone(),
+            app.session().unwrap().transcript_path.clone()
+        )
     );
 }
 
@@ -869,6 +1573,7 @@ fn pane_has_handwritten_global_order_and_clean_project_names() {
         ["b-wait", "g-wait", "a-wait", "g-error", "b-error", "a-done"]
     );
     app.projects[0].name = "bad\n\u{1b}[31mproject\u{1b}[0m".into();
+    app.replace(app.projects.clone());
     let output = frame(&app, 100, 30);
     let pane = output.lines().take(8).collect::<Vec<_>>().join("\n");
     assert!(pane.contains("bad project"), "{output}");
@@ -894,4 +1599,85 @@ fn focused_queue_shrink_clamps_the_view_and_target() {
     app.replace(vec![]);
     assert!(!app.attention_focus);
     assert!(app.attention_path.is_none());
+}
+
+#[test]
+fn attention_keeps_real_projects_and_shared_marks_in_tag_view() {
+    let mut app = attention_fixture_app();
+    let root = app.projects[0].root.clone();
+    let count = app.attention_items().len();
+    app.state
+        .tags
+        .insert(root.clone(), vec!["client".into(), "urgent".into()]);
+    app.state.group = scan::Group::Tag;
+    app.project_organization();
+    assert_eq!(app.projects.len(), 2);
+    assert_eq!(app.attention_items().len(), count);
+    assert!(app.attention_items().iter().all(|i| i.project.root == root));
+    let done = app
+        .attention_items()
+        .into_iter()
+        .find(|i| i.session.status == session_board::model::Status::Done)
+        .unwrap()
+        .session
+        .clone();
+    app.state
+        .read
+        .insert(done.id.clone(), done.last_activity_at);
+    assert_eq!(app.attention_items().len(), count - 1);
+    key(&mut app, KeyCode::Tab);
+    let selected = app.session().unwrap().id.clone();
+    assert_eq!(key(&mut app, KeyCode::Char('p')), Action::Rescan);
+    assert_eq!(app.state.pins, [root]);
+    assert_eq!(key(&mut app, KeyCode::Char('a')), Action::Rescan);
+    assert!(app.state.archived.contains(&selected));
+    assert!(
+        app.attention_items()
+            .iter()
+            .all(|i| i.session.id != selected)
+    );
+}
+
+#[test]
+fn attention_enter_uses_the_router_and_persists_its_selected_read_mark() {
+    use crossterm::event::Event;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("state.toml");
+    State {
+        first_seen: Some(0),
+        ..Default::default()
+    }
+    .save(&path)
+    .unwrap();
+    let mut app = attention_fixture_app();
+    app.load_state(path.clone());
+    let root = app.projects[0].root.clone();
+    app.folded.insert(root.clone());
+    let now = Instant::now();
+    app.event(
+        Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+        now,
+    );
+    let selected = app.session().unwrap().clone();
+    assert!(app.state.read.contains_key(&selected.id));
+    assert_eq!(
+        app.event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            now
+        ),
+        Action::Open
+    );
+    assert_eq!(
+        app.session().unwrap().transcript_path,
+        selected.transcript_path
+    );
+    assert!(!app.folded.contains(&root));
+    app.event(
+        Event::Key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE)),
+        now,
+    );
+    assert_eq!(
+        State::load(&path).unwrap().0.read[&selected.id],
+        selected.last_activity_at
+    );
 }
