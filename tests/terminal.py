@@ -75,7 +75,7 @@ def case(mode):
             (bindir / 'tmux').write_text('#!/bin/sh\nif [ "$1" = -S ] || [ "$1" = -L ]; then shift 2; fi\nif [ "$1" = list-panes ]; then [ -f "$PANES" ] && cat "$PANES"; elif [ "$1" = display ]; then echo %0; else exit 0; fi\n')
             env['PANES'] = str(root / 'panes')
         if mode in ('stale-pane', 'vanished-pane', 'jump-failure', 'attach-failure'):
-            (root / 'panes').write_text('dev\x1f2\x1f1\x1fclaude\x1f999999999\x1f' + str(root) + '\x1e\n')
+            (root / 'panes').write_text(''.join(str(len(v.encode())) + ':' + v for v in ['dev', '2', '1', 'claude', '999999999', str(root)]) + '\n')
         if mode == 'socket-mismatch':
             (root / 'config').mkdir()
             (root / 'config/config.toml').write_text('[tmux]\nsocket = "other"\n')

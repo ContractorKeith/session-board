@@ -96,12 +96,12 @@ def case(mode):
                 assert not (root / 'PWNED').exists()
                 assert not (root / 'WRONG').exists()
             elif mode in ('hash-jump', 'jump-race'):
-                victim = root / 'victim'
+                victim = root / 'victim-界é'
                 victim.mkdir()
                 target = 'a#b' if mode == 'hash-jump' else 'race'
                 run_tmux('new-session', '-d', '-s', target.replace('#', '##'), '-c', str(victim), 'sleep', '60')
                 capture = run_tmux('list-panes', '-t', '=' + target, '-F',
-                    '#{q:session_name}\x1f#{window_index}\x1f#{pane_index}\x1fclaude\x1f999999999\x1f#{q:pane_current_path}\x1e').stdout
+                    '#{n:session_name}:#{session_name}#{n:window_index}:#{window_index}#{n:pane_index}:#{pane_index}6:claude9:999999999#{n:pane_current_path}:#{pane_current_path}').stdout
                 (root / 'panes').write_bytes(capture)
                 rows = [json.loads(line) for line in Path('fixtures/claude_code/project/done.jsonl').read_text().splitlines()]
                 for row in rows:

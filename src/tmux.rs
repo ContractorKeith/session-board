@@ -10,7 +10,14 @@ use std::{
     process::Command,
 };
 
-const FORMAT: &str = "#{q:session_name}\x1f#{window_index}\x1f#{pane_index}\x1f#{q:pane_current_command}\x1f#{pane_pid}\x1f#{q:pane_current_path}\x1e";
+const FORMAT: &str = concat!(
+    "#{n:session_name}:#{session_name}",
+    "#{n:window_index}:#{window_index}",
+    "#{n:pane_index}:#{pane_index}",
+    "#{n:pane_current_command}:#{pane_current_command}",
+    "#{n:pane_pid}:#{pane_pid}",
+    "#{n:pane_current_path}:#{pane_current_path}",
+);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pane {
@@ -87,41 +94,49 @@ pub fn inside() -> bool {
 fn escape_format(value: &str) -> String {
     value.replace('#', "##")
 }
-// tmux q: prefixes shell-special characters (including newlines) with a backslash.
-// Decode data only; never pass the quoted representation to a shell.
-fn unquote(value: &str) -> Option<String> {
-    let mut decoded = String::new();
-    let mut chars = value.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => decoded.push(chars.next()?),
-            '\n' | '\r' | '\t' | '\x1e' | '\x1f' => return None,
-            _ => decoded.push(c),
-        }
+// n: is a byte count. Consume exactly six fields and one record newline;
+// never resynchronize malformed data at a newline inside an untrusted field.
+fn field<'a>(input: &mut &'a [u8]) -> Option<&'a str> {
+    let colon = input.iter().position(|b| *b == b':')?;
+    let digits = input.get(..colon)?;
+    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+        return None;
     }
-    (!decoded.contains(['\x1e', '\x1f'])).then_some(decoded)
+    let len = std::str::from_utf8(digits).ok()?.parse::<usize>().ok()?;
+    let rest = input.get(colon + 1..)?;
+    let value = std::str::from_utf8(rest.get(..len)?).ok()?;
+    *input = rest.get(len..)?;
+    Some(value)
 }
 fn parsed(text: &str) -> Discovery {
     let mut result = Discovery {
         panes: vec![],
         warnings: vec![],
     };
-    for record in text.split("\x1e\n").filter(|r| !r.is_empty()) {
-        let fields: Vec<_> = record.split('\x1f').collect();
+    let mut input = text.as_bytes();
+    while !input.is_empty() {
+        let fields: Option<Vec<_>> = (0..6).map(|_| field(&mut input)).collect();
+        let Some(fields) = fields.filter(|_| input.starts_with(b"\n")) else {
+            result
+                .warnings
+                .push("tmux: unparseable pane metadata".into());
+            break;
+        };
+        input = &input[1..];
         let pane = (|| {
-            if fields.len() != 6 {
+            if !Path::new(fields[5]).is_absolute()
+                || fields.iter().any(|s| s.contains(['\x1e', '\x1f']))
+            {
                 return None;
             }
-            let session = unquote(fields[0])?;
-            let command = unquote(fields[3])?;
-            let cwd = unquote(fields[5])?;
             fields[1].parse::<u32>().ok()?;
             fields[2].parse::<u32>().ok()?;
+            let command = fields[3].to_owned();
             Some(Pane {
-                session,
+                session: fields[0].into(),
                 window: fields[1].into(),
                 index: fields[2].into(),
-                cwd: cwd.into(),
+                cwd: fields[5].into(),
                 pid: fields[4].parse().ok()?,
                 agents: AGENTS
                     .into_iter()
@@ -422,6 +437,13 @@ pub fn doctor(socket: &str) -> String {
 }
 #[cfg(test)]
 mod tests {
+    fn record(fields: &[&str]) -> String {
+        fields
+            .iter()
+            .map(|s| format!("{}:{s}", s.len()))
+            .collect::<String>()
+            + "\n"
+    }
     use super::descendants;
     #[test]
     fn child_and_grandchild_commands_match_without_unrelated_processes() {
@@ -440,10 +462,14 @@ mod tests {
         let cwd = tempfile::tempdir().unwrap();
         let capture: String = (0..20)
             .map(|i| {
-                format!(
-                    "dev\x1f0\x1f{i}\x1fbash\x1f999999999\x1f{}\x1e\n",
-                    cwd.path().display()
-                )
+                record(&[
+                    "dev",
+                    "0",
+                    &i.to_string(),
+                    "bash",
+                    "999999999",
+                    cwd.path().to_str().unwrap(),
+                ])
             })
             .collect();
         let mut projects: Vec<Project> =
@@ -469,9 +495,8 @@ mod tests {
 
     #[test]
     fn issue52_malformed_records_warn_and_newlines_and_tabs_survive() {
-        let result = super::parsed(
-            "bad record\x1e\ndev\x1f0\x1f0\x1fclaude\x1f1\x1f/project\\\ttab\\\nnewline\x1e\n",
-        );
+        let capture = record(&["dev", "0", "0", "claude", "1", "/project\ttab\nnewline"]);
+        let result = super::parsed(&(capture + "bad record\n"));
         assert_eq!(result.warnings.len(), 1);
         assert_eq!(
             result.panes[0].cwd,
@@ -482,10 +507,14 @@ mod tests {
     fn issue82_newest_eligible_session_gets_pane() {
         use super::*;
         let cwd = tempfile::tempdir().unwrap();
-        let panes = parse(&format!(
-            "dev\x1f0\x1f0\x1fclaude\x1f1\x1f{}\x1e\n",
-            cwd.path().display()
-        ));
+        let panes = parse(&record(&[
+            "dev",
+            "0",
+            "0",
+            "claude",
+            "1",
+            cwd.path().to_str().unwrap(),
+        ]));
         let original: Vec<Project> =
             serde_json::from_str(include_str!("../fixtures/list.json")).unwrap();
         for (status, age, older_age, expected) in [
@@ -532,12 +561,26 @@ mod tests {
     }
     #[test]
     fn issue79_malformed_fields_and_separator_paths_never_become_panes() {
-        for path in ["/project\x1f/victim", "/project\x1e/victim"] {
-            let result = super::parsed(&format!(
-                "base\x1f1\x1f1\x1fclaude\x1f999999999\x1f{path}\x1e\n"
-            ));
+        for path in ["/project\x1f/victim", "/project\x1e/victim", "relative", ""] {
+            let result = super::parsed(&record(&["base", "1", "1", "claude", "999999999", path]));
             assert!(result.panes.is_empty());
             assert_eq!(result.warnings.len(), 1);
         }
+    }
+    #[test]
+    fn length_framing_rejects_wrong_counts_and_truncation_and_preserves_unicode() {
+        for bad in [
+            record(&["dev", "0", "0", "claude", "1", "/valid", "extra"]),
+            record(&["dev", "0", "0", "claude", "1"]),
+            "999999999999999999999999999999:bad".into(),
+            "4:dev".into(),
+        ] {
+            let result =
+                super::parsed(&(bad + &record(&["forged", "1", "1", "claude", "1", "/victim"])));
+            assert!(result.panes.is_empty());
+            assert_eq!(result.warnings.len(), 1);
+        }
+        let result = super::parsed(&record(&["dev", "0", "0", "claude", "1", "/界é\npath"]));
+        assert_eq!(result.panes[0].cwd, std::path::Path::new("/界é\npath"));
     }
 }

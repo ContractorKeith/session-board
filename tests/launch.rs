@@ -22,6 +22,13 @@ fn process_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
+fn pane_record(fields: &[&str]) -> String {
+    fields
+        .iter()
+        .map(|s| format!("{}:{s}", s.len()))
+        .collect::<String>()
+        + "\n"
+}
 fn script(path: &Path, text: &str) {
     fs::write(path, format!("#!/bin/sh\n{text}\n")).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -160,12 +167,14 @@ fn capture_matches_canonical_cwd_and_agent() {
     let s = Sandbox::new();
     let link = s.path("link");
     std::os::unix::fs::symlink(s.path("project"), &link).unwrap();
-    let panes = tmux::parse(
-        &fs::read_to_string("tests/fixtures/list-panes.txt")
-            .unwrap()
-            .replace("PROJECT", link.to_str().unwrap())
-            .replace("OTHER", s.path("other").to_str().unwrap()),
-    );
+    let mut panes = tmux::parse(&fs::read_to_string("tests/fixtures/list-panes.txt").unwrap());
+    for pane in &mut panes {
+        pane.cwd = if pane.cwd == Path::new("/PROJECT") {
+            link.clone()
+        } else {
+            s.path("other")
+        };
+    }
     let registry: Registry = vec![Box::new(Claude {
         root: "fixtures/claude_code".into(),
         now: 1793534400,
@@ -219,10 +228,14 @@ fn cli_jump_honours_socket_inside_and_outside_tmux() {
         let id = s.session("claude_code");
         fs::write(
             s.path("panes"),
-            format!(
-                "dev\x1f2\x1f1\x1fclaude\x1f999999999\x1f{}\x1e\n",
-                s.path("project").display()
-            ),
+            pane_record(&[
+                "dev",
+                "2",
+                "1",
+                "claude",
+                "999999999",
+                s.path("project").to_str().unwrap(),
+            ]),
         )
         .unwrap();
         fs::write(
@@ -554,10 +567,14 @@ fn issue52_tab_in_pane_path_is_matched() {
     .unwrap();
     fs::write(
         s.path("panes"),
-        format!(
-            "dev\x1f2\x1f1\x1fclaude\x1f999999999\x1f{}\x1e\n",
-            cwd.to_str().unwrap().replace('\t', "\\\t")
-        ),
+        pane_record(&[
+            "dev",
+            "2",
+            "1",
+            "claude",
+            "999999999",
+            cwd.to_str().unwrap(),
+        ]),
     )
     .unwrap();
     success(s.cmd().args(["open", &id]).output().unwrap());
@@ -647,10 +664,14 @@ fn issue50_only_newest_session_gets_pane_and_vanished_pane_resumes() {
     fs::write(s.path("claude/projects/project/old.jsonl"), old).unwrap();
     fs::write(
         s.path("panes"),
-        format!(
-            "dev\x1f2\x1f1\x1fclaude\x1f999999999\x1f{}\x1e\n",
-            s.path("project").display()
-        ),
+        pane_record(&[
+            "dev",
+            "2",
+            "1",
+            "claude",
+            "999999999",
+            s.path("project").to_str().unwrap(),
+        ]),
     )
     .unwrap();
     let out = s.cmd().args(["list", "--all", "--json"]).output().unwrap();
@@ -756,10 +777,14 @@ fn issue51_fifty_sessions_twenty_panes_scan_fast() {
         s.path("panes"),
         (0..20)
             .map(|i| {
-                format!(
-                    "dev\x1f0\x1f{i}\x1fbash\x1f999999999\x1f{}\x1e\n",
-                    s.path("project").display()
-                )
+                pane_record(&[
+                    "dev",
+                    "0",
+                    &i.to_string(),
+                    "bash",
+                    "999999999",
+                    s.path("project").to_str().unwrap(),
+                ])
             })
             .collect::<String>(),
     )
