@@ -31,8 +31,15 @@ impl Source for Claude {
         result
     }
 }
+fn meaningful(v: &serde_json::Value) -> bool {
+    v["isSidechain"] != true
+        && v["isMeta"] != true
+        && matches!(v["type"].as_str(), Some("user" | "assistant"))
+        && read::timestamp(&v["timestamp"]).is_some()
+}
+
 fn session(path: &Path, now: i64, result: &mut SourceScan) -> Option<Session> {
-    let (records, boundary) = read::records(path, result)
+    let (records, boundary) = read::records(path, result, meaningful)
         .map_err(|e| result.warnings.push(format!("{}: {e}", path.display())))
         .ok()?;
     let mut id = String::new();
@@ -44,6 +51,7 @@ fn session(path: &Path, now: i64, result: &mut SourceScan) -> Option<Session> {
     let mut started = None;
     let mut last = None;
     let mut tail = Tail::default();
+    let record_count = records.len();
     for (index, v) in records.into_iter().enumerate() {
         // The omitted middle may contain completions; head status is not tail evidence.
         if boundary == Some(index) {
@@ -115,6 +123,9 @@ fn session(path: &Path, now: i64, result: &mut SourceScan) -> Option<Session> {
             tail.ended = false;
             tail.text.clear();
         }
+    }
+    if boundary == Some(record_count) {
+        tail = Tail::default();
     }
     let cwd = cwd?;
     if id.is_empty() || !cwd.is_absolute() {

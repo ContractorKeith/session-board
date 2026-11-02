@@ -76,15 +76,52 @@ fn titles(path: &Path, result: &mut SourceScan) -> HashMap<String, String> {
     }
     titles
 }
+fn meaningful(v: &serde_json::Value) -> bool {
+    let kind = v["type"].as_str().unwrap_or_default();
+    let p = &v["payload"];
+    if kind == "response_item"
+        && p["type"] == "message"
+        && !matches!(p["role"].as_str(), Some("user" | "assistant"))
+    {
+        return false;
+    }
+    kind == "session_meta"
+        || (kind == "event_msg"
+            && matches!(
+                p["type"].as_str(),
+                Some(
+                    "task_started"
+                        | "task_complete"
+                        | "turn_aborted"
+                        | "item_completed"
+                        | "user_message"
+                        | "error"
+                )
+            ))
+        || (kind == "response_item"
+            && matches!(
+                p["type"].as_str(),
+                Some(
+                    "message"
+                        | "custom_tool_call"
+                        | "custom_tool_call_output"
+                        | "function_call"
+                        | "function_call_output"
+                )
+            ))
+}
+
 fn session(
     path: &Path,
     now: i64,
     titles: &HashMap<String, String>,
     result: &mut SourceScan,
 ) -> Option<Session> {
-    let (records, boundary) = read::records(path, result)
-        .map_err(|e| result.warnings.push(format!("{}: {e}", path.display())))
-        .ok()?;
+    let (records, boundary) = read::records(path, result, |v| {
+        meaningful(v) && read::timestamp(&v["timestamp"]).is_some()
+    })
+    .map_err(|e| result.warnings.push(format!("{}: {e}", path.display())))
+    .ok()?;
     let mut identity = None;
     let mut first_event_user = None;
     let mut last_event_user = None;
@@ -97,6 +134,7 @@ fn session(
     let mut tail = Tail::default();
     let mut task_active = false;
     let mut calls = HashSet::new();
+    let record_count = records.len();
     for (index, v) in records.into_iter().enumerate() {
         if boundary == Some(index) {
             // Task lifecycle survives omitted history; tail task events override it.
@@ -124,37 +162,7 @@ fn session(
                 PathBuf::from(read::string(p, "cwd")),
             ));
         }
-        if kind == "response_item"
-            && p["type"] == "message"
-            && !matches!(p["role"].as_str(), Some("user" | "assistant"))
-        {
-            continue;
-        }
-        let meaningful = kind == "session_meta"
-            || (kind == "event_msg"
-                && matches!(
-                    p["type"].as_str(),
-                    Some(
-                        "task_started"
-                            | "task_complete"
-                            | "turn_aborted"
-                            | "item_completed"
-                            | "user_message"
-                            | "error"
-                    )
-                ))
-            || (kind == "response_item"
-                && matches!(
-                    p["type"].as_str(),
-                    Some(
-                        "message"
-                            | "custom_tool_call"
-                            | "custom_tool_call_output"
-                            | "function_call"
-                            | "function_call_output"
-                    )
-                ));
-        if !meaningful {
+        if !meaningful(&v) {
             continue;
         }
         let Some(time) = read::timestamp(&v["timestamp"]) else {
@@ -244,6 +252,12 @@ fn session(
             }
             _ => (),
         }
+    }
+    if boundary == Some(record_count) {
+        tail = Tail {
+            pending: task_active,
+            ..Default::default()
+        };
     }
     let (id, cwd) = identity?;
     if id.is_empty() || !cwd.is_absolute() {

@@ -9,6 +9,7 @@ use std::{
 
 const HEAD_BYTES: u64 = 256 * 1024;
 const TAIL_BYTES: u64 = 64 * 1024;
+const MAX_TAIL_BYTES: u64 = 1024 * 1024;
 const FALLBACK_BYTES: u64 = 64 * 1024 * 1024;
 pub fn now() -> i64 {
     SystemTime::now()
@@ -17,9 +18,13 @@ pub fn now() -> i64 {
         .as_secs() as i64
 }
 
-/// Sample complete head/tail records. An oversized final record gets a bounded
-/// contiguous fallback so recent activity never silently falls back to old metadata.
-pub fn records(path: &Path, result: &mut SourceScan) -> io::Result<(Vec<Value>, Option<usize>)> {
+/// Keep the head and recover a meaningful tail without reading the omitted middle.
+/// Alignment and recovery share a hard 1 MiB tail budget.
+pub fn records(
+    path: &Path,
+    result: &mut SourceScan,
+    meaningful: impl Fn(&Value) -> bool,
+) -> io::Result<(Vec<Value>, Option<usize>)> {
     let mut file = File::open(path)?;
     let size = file.metadata()?.len();
     let mut head = Vec::new();
@@ -32,68 +37,67 @@ pub fn records(path: &Path, result: &mut SourceScan) -> io::Result<(Vec<Value>, 
     let end = head.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
     head.truncate(end);
     let mut records = parse(&head, result);
-    let candidate = size.saturating_sub(TAIL_BYTES).max(end as u64);
-    let start = aligned_tail_start(&mut file, candidate, end as u64, size)?.unwrap_or(end as u64);
-    if size - start > FALLBACK_BYTES {
-        return Err(io::Error::other(
-            "no complete tail boundary; fallback exceeds 64 MiB",
-        ));
-    }
-    let gap = start > end as u64;
-    file.seek(SeekFrom::Start(start))?;
-    let mut tail = Vec::new();
-    (&mut file).take(size - start).read_to_end(&mut tail)?;
-    let mut sampled = SourceScan::default();
-    let tail_records = parse(&tail, &mut sampled);
-    if tail_records.is_empty() {
-        if size - end as u64 > FALLBACK_BYTES {
-            return Err(io::Error::other(
-                "no complete tail record; fallback exceeds 64 MiB",
-            ));
-        }
-        file.seek(SeekFrom::Start(end as u64))?;
-        tail.clear();
-        (&mut file).take(size - end as u64).read_to_end(&mut tail)?;
-        records.extend(parse(&tail, result));
-        return Ok((records, None));
-    }
-    result.skipped_lines += sampled.skipped_lines;
-    let boundary = gap.then_some(records.len());
-    records.extend(tail_records);
-    Ok((records, boundary))
-}
-
-/// Include the record crossing the nominal tail window, even when later complete
-/// records exist. Never scan or allocate beyond the bounded fallback budget.
-fn aligned_tail_start(
-    file: &mut File,
-    start: u64,
-    head_end: u64,
-    size: u64,
-) -> io::Result<Option<u64>> {
-    if start == head_end {
-        return Ok(Some(start));
-    }
-    file.seek(SeekFrom::Start(start - 1))?;
-    let mut previous = [0];
-    file.read_exact(&mut previous)?;
-    if previous[0] == b'\n' {
-        return Ok(Some(start));
-    }
-    let limit = size.saturating_sub(FALLBACK_BYTES).max(head_end);
-    let mut cursor = start;
-    let mut block = Vec::new();
+    let head_end = end as u64;
+    let limit = size.saturating_sub(MAX_TAIL_BYTES).max(head_end);
+    let mut cursor = size;
+    let mut fragment = Vec::new();
+    let mut tail_records = Vec::new();
+    let mut tail_start = size;
+    let mut found = false;
+    // Resolve the record crossing the nominal window before deciding to stop.
+    let nominal = size.saturating_sub(TAIL_BYTES).max(head_end);
+    let mut aligned = nominal == head_end;
     while cursor > limit {
         let lower = cursor.saturating_sub(TAIL_BYTES).max(limit);
-        block.resize((cursor - lower) as usize, 0);
+        let mut block = vec![0; (cursor - lower) as usize];
         file.seek(SeekFrom::Start(lower))?;
         file.read_exact(&mut block)?;
-        if let Some(index) = block.iter().rposition(|b| *b == b'\n') {
-            return Ok(Some(lower + index as u64 + 1));
+        block.append(&mut fragment);
+        let at_boundary = if lower == limit && limit > head_end {
+            file.seek(SeekFrom::Start(lower - 1))?;
+            let mut previous = [0];
+            file.read_exact(&mut previous)?;
+            previous[0] == b'\n'
+        } else {
+            lower == head_end
+        };
+        let first = if at_boundary {
+            Some(0)
+        } else {
+            block.iter().position(|b| *b == b'\n').map(|i| i + 1)
+        };
+        if let Some(first) = first {
+            let start = lower + first as u64;
+            aligned |= start <= nominal;
+            let mut prefix = parse(&block[first..], result);
+            found |= prefix.iter().any(&meaningful);
+            prefix.append(&mut tail_records);
+            tail_records = prefix;
+            tail_start = start;
+            block.truncate(first);
         }
+        fragment = block;
         cursor = lower;
+        if aligned && found {
+            break;
+        }
     }
-    Ok((limit == head_end).then_some(head_end))
+    if cursor == limit && limit > head_end && !found {
+        // Preserve the existing rejection of transcripts beyond the old fallback cap.
+        if !aligned && size - head_end > FALLBACK_BYTES {
+            return Err(io::Error::other(
+                "no complete tail boundary; fallback exceeds 64 MiB (1 MiB tail cap reached)",
+            ));
+        }
+        result.skipped_lines += 1;
+        result.warnings.push(format!(
+            "{}: meaningful tail not found within 1 MiB tail cap",
+            path.display()
+        ));
+    }
+    let boundary = (tail_start > head_end).then_some(records.len());
+    records.extend(tail_records);
+    Ok((records, boundary))
 }
 
 fn parse(bytes: &[u8], result: &mut SourceScan) -> Vec<Value> {

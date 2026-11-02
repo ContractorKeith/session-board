@@ -119,6 +119,13 @@ Rules that hold the shape:
   `tmux` and `launch` run processes. Nothing else does.
 - Sources are read-only and tolerant: a malformed line is skipped and counted, never fatal.
   `doctor` reports the counts. A missing store is a skipped source, not an error.
+- JSONL sources keep a 256 KiB head and a nominal 64 KiB tail. Include the record
+  crossing the tail boundary. If the tail contains only ignored or invalid records,
+  extend backwards in 64 KiB steps until source-specific meaningful activity is
+  found, the head is reached, or the hard 1 MiB total tail cap is reached. Alignment
+  shares that cap; no omitted middle is read in full. At the cap, keep the existing
+  source fallback status, count one skipped line and give doctor a path-specific
+  `1 MiB tail cap` warning. Seam fragments are never parsed as malformed records.
 - Status is derived from the transcript, not from screen scraping. The tmux pane, when found,
   is only used to jump. If the two disagree, the transcript wins.
 - sboard never writes inside `~/.claude`, `~/.codex`, `~/.grok` or any agent's directory, and

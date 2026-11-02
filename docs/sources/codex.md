@@ -28,11 +28,14 @@ the latest eligible text. Fallback titles are cut to 60 Unicode characters. Titl
 collapse whitespace and remove controls and escape commands before reaching text
 output; last user/assistant text retains transcript prose for the future detail pane.
 
-Read 256 KiB of head and a nominal 64 KiB tail. When the tail starts inside a record,
-scan backwards in 64 KiB steps to its beginning (or head end), capped at 64 MiB;
-complete following records must not hide the crossing record. Keep exact line
-boundaries intact. If the tail contains no complete record, retain the head-end-to-EOF
-fallback, capped at 64 MiB; larger reads skip the session with a count and reason.
+Read 256 KiB of head and a nominal 64 KiB tail, aligned to complete records,
+including the record crossing the nominal boundary. When the tail has no meaningful
+activity, extend backwards in 64 KiB steps until activity is found or the head is
+reached. Alignment and recovery share a hard 1 MiB total tail cap. At the cap,
+retain the source's fallback status and report one skipped line plus a path-specific
+`1 MiB tail cap` warning in doctor. Never parse the left seam fragment. Oversized
+unrecoverable transcripts beyond the old 64 MiB fallback threshold still skip
+the session with a reason, without reading that middle.
 Sampled malformed/truncated/invalid-UTF-8 records increment skipped lines; seam
 fragments do not. Missing/unreadable stores increment skipped stores. Empty files,
 invalid cwds, excluded provenance and unreadable transcripts increment skipped
@@ -89,3 +92,8 @@ through to actual owner text. Numeric timestamp fields accept ASCII digits only.
 
 Retained last user and assistant text is capped at the latest 8 KiB each,
 on a UTF-8 boundary. Status derivation still sees the full sampled text.
+
+Issue #118 fixtures in `fixtures/tail-sampling/` and `tests/tail_sampling.rs` cover
+completed turns hidden behind large ignored records, small transcripts, recovery
+to the head and the 1 MiB cap. The ignored release performance test scans 10,000
+fixture-shaped Claude sessions through the public Source seam.
