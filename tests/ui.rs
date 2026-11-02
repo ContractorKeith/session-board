@@ -593,6 +593,8 @@ fn attention_focus_collapse_empty_and_cli_order() {
     key(&mut app, KeyCode::Tab);
     assert!(app.attention_focus);
     assert!(app.session().is_some());
+    assert_eq!(key(&mut app, KeyCode::Char('n')), Action::New);
+    assert_eq!(key(&mut app, KeyCode::Char('w')), Action::Worktree);
     key(&mut app, KeyCode::Down);
     assert_eq!(app.attention_selected, 1);
     assert!(frame(&app, 100, 30).contains("Attention [focused]"));
@@ -817,9 +819,8 @@ fn focused_queue_shrink_clamps_the_view_and_target() {
     app.replace(p);
     assert_eq!(app.session().unwrap().id, "b-wait");
     assert!(pane_highlight(&app).contains("b-wait"));
-    key(&mut app, KeyCode::Enter);
+    assert_eq!(key(&mut app, KeyCode::Enter), Action::Open);
     assert_eq!(app.session().unwrap().id, "b-wait");
-    assert_eq!(app.message, "open lands in M3");
     app.replace(vec![]);
     assert!(!app.attention_focus);
     assert!(app.attention_path.is_none());

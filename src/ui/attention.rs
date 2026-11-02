@@ -93,7 +93,7 @@ impl App {
                 self.sync_attention_tree(true);
                 return None;
             }
-            KeyCode::Char('m' | 'r') => return None,
+            KeyCode::Char('m' | 'r' | 'n' | 'w') => return None,
             _ => {}
         }
         Some(Action::None)

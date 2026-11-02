@@ -39,7 +39,11 @@ for mode in ('slow', 'disabled', 'fail', 'timeout'):
                    SBOARD_CONFIG_DIR=str(root / 'config'), NOTIFY_LOG=str(log), PATH=str(root / 'bin') + ':' + os.environ['PATH'])
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 100, 0, 0))
-        proc = subprocess.Popen([binary], env=env, stdin=slave, stdout=slave, stderr=subprocess.PIPE)
+        def controlling_terminal():
+            os.setsid()
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+        proc = subprocess.Popen([binary], env=env, stdin=slave, stdout=slave, stderr=subprocess.PIPE,
+                                preexec_fn=controlling_terminal)
         os.close(slave)
         output = b''
         def pump():
