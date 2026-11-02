@@ -412,13 +412,18 @@ fn event_loop(
                 Err(_) => break,
             };
             match result {
-                Ok(result) => {
+                Ok((started_at, result)) => {
                     app.summary = format!("{} projects", result.projects.len());
                     app.scan_warnings = result.warnings;
                     if let Ok((config, _)) = session_board::config::Config::path()
                         .and_then(|path| session_board::config::Config::load(&path))
                     {
-                        transitions.scan(&result.projects, config.notify, &mut desktop);
+                        transitions.scan_started(
+                            &result.projects,
+                            config.notify,
+                            &mut desktop,
+                            started_at,
+                        );
                     }
                     match session_board::state::State::path()
                         .and_then(|path| session_board::state::State::load(&path))

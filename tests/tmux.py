@@ -177,11 +177,12 @@ exec "$REAL_TMUX" -S "$socket" "$@"
                 wrapper = root / 'board'
                 wrapper.write_text('#!/bin/sh\necho $$ > ' + shlex.quote(str(root / 'pid.tmp')) + '\nmv ' + shlex.quote(str(root / 'pid.tmp')) + ' ' + shlex.quote(str(root / 'pid')) + '\nexec ' + shlex.quote(BINARY) + '\n')
                 wrapper.chmod(0o755)
-                run_tmux('new-window', '-c', str(root), str(wrapper))
+                pane = run_tmux('new-window', '-P', '-F', '#{pane_id}', '-c', str(root), str(wrapper)).stdout.decode().strip()
                 wait_for(lambda: (root / 'pid').exists(), 'board did not launch')
                 pid = int((root / 'pid').read_text())
-                # Give the event reader time to enter its poll before closing the pty.
-                time.sleep(.25)
+                # A rendered frame acknowledges that sboard entered its terminal event loop.
+                wait_for(lambda: b'Projects' in run_tmux('capture-pane', '-p', '-t', pane).stdout,
+                         'board never rendered its first frame')
                 run_tmux('kill-server')
                 def gone():
                     status = subprocess.run(['ps', '-p', str(pid), '-o', 'stat='], capture_output=True).stdout.decode().strip()

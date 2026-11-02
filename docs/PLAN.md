@@ -160,6 +160,10 @@ temp file and rename. Config file (`~/.config/sboard/config.toml`): `roots = []`
 roots to include even with no sessions), `window_days = 7`, `agents = { claude_code = true, ... }`,
 `notify = false`, `tmux.socket = ""`.
 
+Desktop notifications are per sboard process: two instances may each announce the same
+transition. A notifier that deliberately daemonizes with `setsid()` and forks again leaves
+the command process group and is outside the five-second process-group timeout.
+
 ## 7. CLI contract
 
 ```

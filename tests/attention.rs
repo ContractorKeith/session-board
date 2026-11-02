@@ -492,3 +492,84 @@ fn newly_seen_session_in_the_previous_scan_second_notifies() {
     tracker.scan_at(&p, true, &mut record, NOW + 1);
     assert_eq!(record.calls.len(), 1);
 }
+
+#[test]
+fn a_new_question_after_clock_rollback_notifies_once() {
+    use session_board::model::Status;
+    let mut p = projects(std::path::Path::new("fixtures/claude_code"));
+    p[0].sessions.truncate(1);
+    let mut tracker = Transitions::default();
+    let mut record = Recording::default();
+    for (status, activity, now) in [
+        (Status::Working, 1000, 1000),
+        (Status::Waiting, 1001, 1001),
+        (Status::Waiting, 902, 902),
+        (Status::Waiting, 902, 903),
+    ] {
+        p[0].sessions[0].status = status;
+        p[0].sessions[0].last_activity_at = activity;
+        tracker.scan_at(&p, true, &mut record, now);
+    }
+    assert_eq!(
+        record.calls.len(),
+        2,
+        "clock correction lost a new question"
+    );
+}
+
+#[test]
+fn notification_replay_history_keeps_exactly_the_last_32_events() {
+    use session_board::model::Status;
+    let mut p = projects(std::path::Path::new("fixtures/claude_code"));
+    p[0].sessions.truncate(1);
+    let mut tracker = Transitions::default();
+    let mut record = Recording::default();
+    p[0].sessions[0].status = Status::Working;
+    tracker.scan_at(&p, true, &mut record, NOW);
+    for activity in NOW + 1..=NOW + 32 {
+        p[0].sessions[0].status = Status::Waiting;
+        p[0].sessions[0].last_activity_at = activity;
+        tracker.scan_at(&p, true, &mut record, activity);
+    }
+    let mut replay = |activity, now| {
+        p[0].sessions[0].status = Status::Working;
+        tracker.scan_at(&p, true, &mut record, now);
+        p[0].sessions[0].status = Status::Waiting;
+        p[0].sessions[0].last_activity_at = activity;
+        tracker.scan_at(&p, true, &mut record, now);
+        record.calls.len()
+    };
+    assert_eq!(
+        replay(NOW + 1, NOW + 33),
+        32,
+        "oldest of 32 was evicted early"
+    );
+    assert_eq!(replay(NOW + 33, NOW + 34), 33);
+    assert_eq!(replay(NOW + 2, NOW + 35), 33, "a retained event repeated");
+    assert_eq!(
+        replay(NOW + 1, NOW + 36),
+        34,
+        "history grew beyond 32 events"
+    );
+}
+
+#[test]
+fn an_unchanged_scan_after_clock_rollback_does_not_hide_the_next_question() {
+    use session_board::model::Status;
+    let mut p = projects(std::path::Path::new("fixtures/claude_code"));
+    p[0].sessions.truncate(1);
+    let mut tracker = Transitions::default();
+    let mut record = Recording::default();
+    for (status, activity, now) in [
+        (Status::Working, 1000, 1000),
+        (Status::Waiting, 1001, 1001),
+        (Status::Waiting, 1001, 902),
+        (Status::Waiting, 902, 902),
+        (Status::Waiting, 902, 903),
+    ] {
+        p[0].sessions[0].status = status;
+        p[0].sessions[0].last_activity_at = activity;
+        tracker.scan_at(&p, true, &mut record, now);
+    }
+    assert_eq!(record.calls.len(), 2);
+}

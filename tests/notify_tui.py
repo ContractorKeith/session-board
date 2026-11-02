@@ -15,7 +15,7 @@ import time
 from terminal import screen
 
 binary = str(Path(sys.argv[1]).resolve())
-for mode in ('slow', 'disabled', 'fail', 'timeout'):
+for mode in ([sys.argv[2]] if len(sys.argv) > 2 else ('slow', 'disabled', 'fail', 'timeout', 'scan-start')):
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
         for directory in ('claude/projects/project', 'codex/sessions', 'config', 'bin'):
@@ -23,15 +23,20 @@ for mode in ('slow', 'disabled', 'fail', 'timeout'):
         (root / 'config/config.toml').write_text('notify = ' + ('false' if mode == 'disabled' else 'true') + '\n')
         transcript = root / 'claude/projects/project/session.jsonl'
         log = root / 'calls'
-        def fixture(status):
+        def fixture(status, target=None, identity='stable'):
             rows = [json.loads(line) for line in Path(f'fixtures/claude_code/project/{status}.jsonl').read_text().splitlines()]
             for row in rows:
-                row.update(sessionId='stable', cwd=str(root), timestamp=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'))
-            transcript.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+                row.update(sessionId=identity, cwd=str(root), timestamp=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'))
+            (target or transcript).write_text(''.join(json.dumps(row) + '\n' for row in rows))
         gate = root / 'gate'
         os.mkfifo(gate)
         gate_fd = os.open(gate, os.O_RDWR | os.O_NONBLOCK)
         fixture('working')
+        entered = root / 'git-entered'
+        if mode == 'scan-start':
+            git = root / 'bin/git'
+            git.write_text('#!/bin/sh\nprintf ready > "$GIT_ENTERED"\nread release < "$NOTIFY_GATE"\nexit 1\n')
+            git.chmod(0o755)
         # A real executable boundary, never a real desktop server.
         for name in ('notify-send', 'osascript'):
             fake = root / 'bin' / name
@@ -39,7 +44,7 @@ for mode in ('slow', 'disabled', 'fail', 'timeout'):
             fake.chmod(0o755)
         env = dict(os.environ, TERM='xterm-256color', CLAUDE_CONFIG_DIR=str(root / 'claude'),
                    CODEX_HOME=str(root / 'codex'), SBOARD_STATE_DIR=str(root / 'state'),
-                   SBOARD_CONFIG_DIR=str(root / 'config'), NOTIFY_LOG=str(log), NOTIFY_GATE=str(gate), PATH=str(root / 'bin') + ':' + os.environ['PATH'])
+                   SBOARD_CONFIG_DIR=str(root / 'config'), NOTIFY_LOG=str(log), NOTIFY_GATE=str(gate), GIT_ENTERED=str(entered), PATH=str(root / 'bin') + ':' + os.environ['PATH'])
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 100, 0, 0))
         def controlling_terminal():
@@ -63,9 +68,16 @@ for mode in ('slow', 'disabled', 'fail', 'timeout'):
                     break
             raise AssertionError(f'{mode}: {description}\n{screen(output)}')
         try:
+            if mode == 'scan-start':
+                wait(entered.exists, 'initial source enumeration never reached git')
+                created = int(time.time())
+                fixture('waiting', root / 'claude/projects/project/new.jsonl', 'new-session')
+                wait(lambda: int(time.time()) > created, 'clock did not cross the creation second')
+                os.write(gate_fd, b'release\n')
             wait(lambda: '1 projects' in screen(output), 'initial scan missing')
-            assert not log.exists(), 'initial scan notified'
-            fixture('waiting')
+            if mode != 'scan-start':
+                assert not log.exists(), 'initial scan notified'
+                fixture('waiting')
             if mode == 'disabled':
                 wait(lambda: 'waiting' in screen(output), 'transition scan missing')
                 until = time.monotonic() + .5
@@ -86,7 +98,7 @@ for mode in ('slow', 'disabled', 'fail', 'timeout'):
                     os.write(gate_fd, b'release\n')
                     wait(lambda: 'Attention focus: Enter' in screen(output), 'help frame incomplete')
                     print(f'help visible in {elapsed * 1000:.1f} ms')
-                else:
+                elif mode != 'scan-start':
                     wait(lambda: 'desktop notification:' in screen(output), 'delivery failure missing from status bar')
                     command = 'osascript' if sys.platform == 'darwin' else 'notify-send'
                     assert command in screen(output).splitlines()[-1]

@@ -59,3 +59,7 @@ is silent. Linux uses `notify-send --app-name sboard`; macOS uses `osascript`.
 Delivery runs off the UI thread through a bounded queue. More than five transitions in one
 scan produce one summary; commands exceeding five seconds are killed. Missing or failing
 commands warn once in the status bar, and a missing command becomes a no-op.
+
+Desktop notifications are per sboard process: two instances may each announce the same
+transition. A notifier that deliberately daemonizes with `setsid()` and forks again leaves
+the command process group and is outside the five-second process-group timeout.

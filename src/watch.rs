@@ -16,7 +16,7 @@ use std::{
         mpsc::{self, Receiver, SyncSender},
     },
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 pub const DEBOUNCE: Duration = Duration::from_secs(2);
@@ -35,6 +35,8 @@ pub struct StoreWatcher {
     stop: mpsc::Sender<Wake>,
     worker: Option<thread::JoinHandle<()>>,
     pub status: Receiver<Vec<String>>,
+    #[cfg(test)]
+    pub observed: Receiver<()>,
 }
 impl StoreWatcher {
     #[cfg(test)]
@@ -62,6 +64,8 @@ impl StoreWatcher {
             })
             .collect();
         reconcile(&mut roots, &mut watcher, &status);
+        #[cfg(test)]
+        let (observed, observations) = mpsc::channel();
         let worker = thread::spawn(move || {
             let mut due = None;
             let mut recheck = Instant::now() + RECHECK;
@@ -90,6 +94,8 @@ impl StoreWatcher {
                         }
                         // A fixed window cannot be starved by a streaming transcript.
                         due.get_or_insert_with(|| Instant::now() + DEBOUNCE);
+                        #[cfg(test)]
+                        let _ = observed.send(());
                     }
                     Ok(Wake::Event(Err(_))) => {
                         recheck = Instant::now();
@@ -113,6 +119,8 @@ impl StoreWatcher {
             stop: events,
             worker: Some(worker),
             status: statuses,
+            #[cfg(test)]
+            observed: observations,
         })
     }
 }
@@ -166,7 +174,7 @@ impl Drop for StoreWatcher {
 
 pub struct Scans {
     pub requests: SyncSender<()>,
-    pub results: Receiver<io::Result<scan::Scan>>,
+    pub results: Receiver<io::Result<(i64, scan::Scan)>>,
     pub status: Receiver<Vec<String>>,
     cancelled: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
@@ -225,6 +233,10 @@ impl Scans {
                 if stop.load(Ordering::Relaxed) {
                     break;
                 }
+                let started_at = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
                 let result =
                     catch_unwind(AssertUnwindSafe(|| scan(first))).unwrap_or_else(|panic| {
                         let message = panic
@@ -235,7 +247,10 @@ impl Scans {
                         Err(io::Error::other(format!("panicked: {message}")))
                     });
                 first = false;
-                if completed.send(result).is_err() {
+                if completed
+                    .send(result.map(|scan| (started_at, scan)))
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -333,6 +348,7 @@ mod tests {
         assert!(warnings.iter().any(|s| s.contains("watch limit")));
         let (watcher, _) = StoreWatcher::new(&[temp.path().join("missing")]).unwrap();
         assert!(watcher.status.recv().unwrap()[0].contains("unwatched:"));
+        assert!(watcher.observed.try_recv().is_err());
     }
     #[test]
     fn initial_scan_and_cancel_do_not_wait_for_refresh_deadline() {

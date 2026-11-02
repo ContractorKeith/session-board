@@ -268,17 +268,32 @@ pub struct Transitions {
 }
 impl Transitions {
     pub fn scan(&mut self, projects: &[Project], enabled: bool, notifier: &mut impl Notifier) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-        self.scan_at(projects, enabled, notifier, now);
+        self.scan_started(projects, enabled, notifier, unix_time());
+    }
+    pub fn scan_started(
+        &mut self,
+        projects: &[Project],
+        enabled: bool,
+        notifier: &mut impl Notifier,
+        started_at: i64,
+    ) {
+        self.scan_times(projects, enabled, notifier, started_at, unix_time());
     }
     pub fn scan_at(
         &mut self,
         projects: &[Project],
         enabled: bool,
         notifier: &mut impl Notifier,
+        now: i64,
+    ) {
+        self.scan_times(projects, enabled, notifier, now, now);
+    }
+    fn scan_times(
+        &mut self,
+        projects: &[Project],
+        enabled: bool,
+        notifier: &mut impl Notifier,
+        started_at: i64,
         now: i64,
     ) {
         let mut current = HashMap::new();
@@ -299,10 +314,12 @@ impl Transitions {
                     .is_some_and(|events| events.contains(&event));
                 let changed = self.scanned_at.is_some_and(|previous_scan| {
                     old.map_or(activity >= previous_scan, |seen| {
+                        // A corrected clock can put a new activity below the old watermark.
+                        let watermark = seen.watermark.min(now);
                         seen.status != session.status
                             || (matches!(session.status, Status::Waiting | Status::Done)
                                 && seen.raw_activity != session.last_activity_at
-                                && activity > seen.watermark)
+                                && (activity >= watermark || seen.watermark > now))
                     })
                 });
                 // An unchanged future timestamp or a replay must not advance the clock.
@@ -329,7 +346,11 @@ impl Transitions {
                         Status::Waiting | Status::Done | Status::Error
                     )
                 {
-                    self.announced.entry(key).or_default().push(event);
+                    let history = self.announced.entry(key).or_default();
+                    if history.len() == 32 {
+                        history.remove(0);
+                    }
+                    history.push(event);
                     changed_count += 1;
                     if changed_count > 5 {
                         continue;
@@ -361,6 +382,13 @@ impl Transitions {
         }
         // Missing stores and rolled-back transcripts must not erase known activity.
         self.previous.extend(current);
-        self.scanned_at = Some(now);
+        self.scanned_at = Some(started_at);
     }
+}
+
+fn unix_time() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }

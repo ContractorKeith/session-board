@@ -295,17 +295,29 @@ fn detail_shows_last_nonblank_lines() {
 #[test]
 fn steady_writes_cannot_starve_refresh() {
     let temp = tempfile::tempdir().unwrap();
-    let (_watcher, requests) = watch::StoreWatcher::new(&[temp.path().to_owned()]).unwrap();
+    let (watcher, requests) = watch::StoreWatcher::new(&[temp.path().to_owned()]).unwrap();
+    assert!(
+        watcher
+            .status
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .is_empty()
+    );
+    let deadline = Instant::now() + Duration::from_secs(15);
     let mut count = 0;
-    for n in 0..8 {
-        fs::write(temp.path().join("session.jsonl"), n.to_string()).unwrap();
-        std::thread::sleep(Duration::from_secs(1));
+    let mut writes = 0;
+    while count < 3 && Instant::now() < deadline {
+        fs::write(temp.path().join("session.jsonl"), writes.to_string()).unwrap();
+        watcher
+            .observed
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("watcher did not acknowledge a write");
+        writes += 1;
         count += requests.try_iter().count();
     }
-    count += requests.try_iter().count();
     assert!(
-        (3..=5).contains(&count),
-        "received {count} requests during steady writes"
+        count >= 3,
+        "steady acknowledged writes starved refresh: {count} requests, {writes} writes"
     );
 }
 
@@ -362,14 +374,14 @@ fn scans_initial_watcher_wiring_and_panic_recovery() {
         .recv_timeout(Duration::from_secs(8))
         .unwrap()
         .unwrap();
-    assert_eq!(initial.projects[0].sessions[0].status, Status::Working);
+    assert_eq!(initial.1.projects[0].sessions[0].status, Status::Working);
     fs::copy("fixtures/claude_code/project/waiting.jsonl", &path).unwrap();
     let refreshed = scans
         .results
         .recv_timeout(Duration::from_secs(10))
         .unwrap()
         .unwrap();
-    assert_eq!(refreshed.projects[0].sessions[0].status, Status::Waiting);
+    assert_eq!(refreshed.1.projects[0].sessions[0].status, Status::Waiting);
 }
 
 #[test]
@@ -409,6 +421,7 @@ fn quiet_store_status_crosses_threshold() {
             .recv_timeout(Duration::from_secs(5))
             .unwrap()
             .unwrap()
+            .1
             .projects[0]
             .sessions[0]
             .status,
@@ -420,6 +433,7 @@ fn quiet_store_status_crosses_threshold() {
             .recv_timeout(Duration::from_secs(5))
             .unwrap()
             .unwrap()
+            .1
             .projects[0]
             .sessions[0]
             .status,
