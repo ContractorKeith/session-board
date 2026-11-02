@@ -37,29 +37,49 @@ enum LocalCommand {
     Other,
 }
 
-fn local_command(text: &str) -> Option<LocalCommand> {
-    let text = text.trim_start();
-    if ![
-        "<command-name>",
-        "<command-message>",
-        "<local-command-stdout>",
-    ]
-    .iter()
-    .any(|tag| text.starts_with(tag))
+fn local_command(content: &serde_json::Value) -> Option<LocalCommand> {
+    // A tool result (or any non-text block) is never a native command record.
+    if content
+        .as_array()
+        .is_some_and(|parts| parts.iter().any(|part| part["type"] != "text"))
     {
         return None;
     }
-    for tag in ["command-name", "command-message"] {
-        if let Some(value) = text
-            .split_once(&format!("<{tag}>"))
-            .and_then(|(_, rest)| rest.split_once(&format!("</{tag}>")))
-            .map(|(value, _)| value.trim())
-            && matches!(value, "/exit" | "exit")
-        {
-            return Some(LocalCommand::Exit);
-        }
+    let text = read::text(content);
+    let mut rest = text.trim();
+    if rest.starts_with("<local-command-stdout>") {
+        return rest
+            .strip_prefix("<local-command-stdout>")?
+            .strip_suffix("</local-command-stdout>")
+            .filter(|body| !body.contains("</local-command-stdout>"))
+            .map(|_| LocalCommand::Other);
     }
-    Some(LocalCommand::Other)
+    let mut seen = Vec::new();
+    let mut exit = false;
+    while !rest.is_empty() {
+        let tag = ["command-name", "command-message", "command-args"]
+            .into_iter()
+            .find(|tag| rest.starts_with(&format!("<{tag}>")))?;
+        if seen.contains(&tag) {
+            return None;
+        }
+        seen.push(tag);
+        let (value, suffix) = rest
+            .strip_prefix(&format!("<{tag}>"))?
+            .split_once(&format!("</{tag}>"))?;
+        if tag != "command-args" && matches!(value.trim(), "/exit" | "exit") {
+            exit = true;
+        }
+        rest = suffix.trim();
+    }
+    if !seen.contains(&"command-name") && !seen.contains(&"command-message") {
+        return None;
+    }
+    Some(if exit {
+        LocalCommand::Exit
+    } else {
+        LocalCommand::Other
+    })
 }
 
 fn meaningful(v: &serde_json::Value) -> bool {
@@ -68,7 +88,7 @@ fn meaningful(v: &serde_json::Value) -> bool {
         && matches!(v["type"].as_str(), Some("user" | "assistant"))
         && read::timestamp(&v["timestamp"]).is_some()
         && (v["type"] != "user"
-            || local_command(&read::text(&v["message"]["content"])) != Some(LocalCommand::Other))
+            || local_command(&v["message"]["content"]) != Some(LocalCommand::Other))
 }
 
 fn session(path: &Path, now: i64, result: &mut SourceScan) -> Option<Session> {
@@ -128,7 +148,7 @@ fn session(path: &Path, now: i64, result: &mut SourceScan) -> Option<Session> {
         let message = &v["message"];
         let text = read::text(&message["content"]);
         if kind == "user"
-            && let Some(command) = local_command(&text)
+            && let Some(command) = local_command(&message["content"])
         {
             // Commands supply metadata but do not refresh the previous turn's clock.
             last.get_or_insert(time);

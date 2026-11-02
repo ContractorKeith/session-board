@@ -106,6 +106,9 @@ impl App {
     ) -> io::Result<T> {
         restore();
         let result = f();
+        if session_board::launch::child_hung_up() {
+            return result;
+        }
         session_board::launch::restore_terminal();
         terminal::enable_raw_mode()?;
         execute!(output::Output, EnterAlternateScreen, EnableBracketedPaste)?;
@@ -343,6 +346,9 @@ impl Drop for TerminalGuard {
     }
 }
 fn restore() {
+    if session_board::launch::child_hung_up() {
+        return;
+    }
     let _ = terminal::disable_raw_mode();
     session_board::launch::restore_terminal();
     let _ = execute!(
@@ -390,7 +396,7 @@ pub fn run() -> io::Result<i32> {
     if signal != 0 {
         return Ok(128 + signal as i32);
     }
-    if output::closed() {
+    if output::closed() || session_board::launch::child_hung_up() {
         return Ok(128 + signal_hook::consts::SIGHUP);
     }
     result?;
@@ -525,6 +531,9 @@ fn event_loop(
                     let mut open = std::mem::take(&mut app.open);
                     let result = open.action(app, action, terminal);
                     app.open = open;
+                    if session_board::launch::child_hung_up() {
+                        return Ok(());
+                    }
                     if transfer {
                         reader.resume()?;
                         app.discard_input();

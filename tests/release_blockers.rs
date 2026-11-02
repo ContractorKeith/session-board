@@ -167,3 +167,106 @@ fn command_message_exit_ends_turn_but_quoted_command_text_is_a_real_prompt() {
         "Explain <command-name>/exit</command-name> to me."
     );
 }
+
+fn command_envelope_status(content: serde_json::Value, pending: bool) -> Status {
+    let mut row: serde_json::Value = serde_json::from_str(
+        fs::read_to_string("fixtures/release-blockers/claude/exit.jsonl")
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    row["timestamp"] = serde_json::json!("2026-11-01T11:59:00Z");
+    let prefix = if pending {
+        format!("{row}\n")
+    } else {
+        String::new()
+    };
+    row["message"]["content"] = content;
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(
+        temp.path().join("session.jsonl"),
+        format!("{prefix}{row}\n"),
+    )
+    .unwrap();
+    Claude {
+        root: temp.path().into(),
+        now: NOW,
+    }
+    .scan(&Config::default())
+    .sessions[0]
+        .status
+}
+
+#[test]
+fn literal_command_tags_followed_by_prose_are_pending_prompts() {
+    for text in [
+        "<command-name>/exit</command-name> is an XML sample. Explain this tag.",
+        "<command-message>exit</command-message> is an XML sample.",
+        "<local-command-stdout>output</local-command-stdout> explain this output.",
+    ] {
+        assert_eq!(
+            command_envelope_status(serde_json::json!(text), false),
+            Status::Working,
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn command_tags_inside_stdout_are_opaque_and_preserve_pending_work() {
+    assert_eq!(
+        command_envelope_status(
+            serde_json::json!(
+                "<local-command-stdout>Documentation: <command-name>/exit</command-name></local-command-stdout>"
+            ),
+            true
+        ),
+        Status::Working
+    );
+}
+
+#[test]
+fn tool_result_records_never_count_as_local_commands() {
+    for text in [
+        "<command-name>/exit</command-name>",
+        "<local-command-stdout><command-name>/exit</command-name></local-command-stdout>",
+    ] {
+        assert_eq!(
+            command_envelope_status(
+                serde_json::json!([
+                    {"type":"text", "text":text},
+                    {"type":"tool_result", "tool_use_id":"tool", "content":"result"}
+                ]),
+                true
+            ),
+            Status::Working,
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn full_native_command_envelopes_preserve_wrappers_and_args() {
+    for text in [
+        "<command-name>/exit</command-name><command-message>exit</command-message><command-args></command-args>",
+        "<command-message>exit</command-message>\n<command-name>/exit</command-name>",
+        "<command-message>exit</command-message>",
+    ] {
+        assert_eq!(
+            command_envelope_status(serde_json::json!(text), true),
+            Status::Idle,
+            "{text}"
+        );
+    }
+    assert_eq!(
+        command_envelope_status(
+            serde_json::json!(
+                "<command-name>/compact</command-name><command-message>compact</command-message><command-args>retain <command-name>/exit</command-name></command-args>"
+            ),
+            true
+        ),
+        Status::Working
+    );
+}

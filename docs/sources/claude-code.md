@@ -35,15 +35,20 @@ sessions increment skipped sessions. Missing/unreadable stores increment skipped
 stores. Omitted middle records are not validated. Doctor scans all ages and gives
 stale-call reasons; list applies its configured window and never emits those reasons.
 
-Local-command user text starts with a `<command-name>`, `<command-message>` or
-`<local-command-stdout>` wrapper. These records do not open pending turns and do
-not supply titles or last user text. `/exit` (including the command-message
+Local-command user text must be a complete native envelope: command-name and/or
+command-message wrappers, with optional command-args and whitespace, or exactly
+one local-command-stdout wrapper. Extra prose makes it a normal user record.
+Stdout and command-args contents are opaque; tags inside them never mean exit.
+Records containing tool_result or other non-text blocks are never local commands.
+Native command records do not open pending turns or supply titles or last user text. `/exit` (including the command-message
 variant) clears pending, ended and API-error evidence, yielding idle. Other local
 commands preserve the previous turn's status and activity timestamp; command-only
 sessions are idle. Quoted wrappers later in a real prompt are ordinary text.
 During sampling, non-exit local commands do not stop meaningful-tail recovery;
 `/exit` does. Fixtures in `fixtures/release-blockers/claude/` cover `/exit`,
 `/login`, `/clear`, `/compact` and a command followed by a real prompt.
+`tests/release_blockers.rs` covers literal tags followed by prose, opaque stdout,
+tool_result records and native command-message/command-args compatibility.
 
 PLAN §6 first-match rules, thresholds in `src/status.rs`:
 

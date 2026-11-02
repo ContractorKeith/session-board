@@ -7,7 +7,7 @@ use std::{
 static CLOSED: AtomicBool = AtomicBool::new(false);
 
 pub(super) fn closed() -> bool {
-    CLOSED.load(Ordering::Relaxed)
+    CLOSED.load(Ordering::Relaxed) || session_board::launch::child_hung_up()
 }
 pub(super) fn reset() {
     CLOSED.store(false, Ordering::Relaxed);

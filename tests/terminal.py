@@ -573,8 +573,108 @@ def case(mode):
             os.close(slave)
             if stderr_file: stderr_file.close()
 
+def child_hangup_case(mode):
+    """Bound handoff hangup and clean up even against the unfixed binary."""
+    import ctypes
+    # Reap forced-exit grandchildren ourselves on Linux, rather than relying on PID 1.
+    if sys.platform == 'linux':
+        assert ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / 'bin').mkdir()
+        (root / 'config').mkdir()
+        (root / 'config/config.toml').write_text('roots = [' + json.dumps(str(root)) + ']\n')
+        env = dict(os.environ, HOME=str(root), TERM='xterm-256color',
+                   CLAUDE_CONFIG_DIR=str(root / 'claude'), CODEX_HOME=str(root / 'codex'),
+                   GROK_HOME=str(root / 'grok'), OPENCODE_DB=str(root / 'opencode.db'),
+                   SBOARD_STATE_DIR=str(root / 'state'), SBOARD_CONFIG_DIR=str(root / 'config'),
+                   PATH=str(root / 'bin') + os.pathsep + os.environ['PATH'])
+        env.pop('TMUX', None)
+        (root / 'bin/tmux').write_text('#!/bin/sh\nexit 1\n')
+        (root / 'bin/tmux').chmod(0o755)
+        stubborn = mode.endswith('stubborn')
+        agent = root / 'bin/claude'
+        agent.write_text('#!' + sys.executable + '\n' +
+            'import os, signal, time\n' +
+            ('signal.signal(signal.SIGHUP, signal.SIG_IGN)\n' if stubborn else '') +
+            'child = os.fork()\n' +
+            'if child == 0:\n    while True: time.sleep(60)\n' +
+            'open(' + repr(str(root / 'pids')) + ', "w").write(f"{os.getpid()} {child}")\n' +
+            ('' if stubborn else 'def hup(*args):\n    os.waitpid(child, 0)\n    raise SystemExit(0)\nsignal.signal(signal.SIGHUP, hup)\n') +
+            'open(' + repr(str(root / 'ready')) + ', "w").write("ready")\n' +
+            'while True: time.sleep(60)\n')
+        agent.chmod(0o755)
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, __import__('termios').TIOCSWINSZ, struct.pack('HHHH', 30, 100, 0, 0))
+        def controlling_terminal():
+            os.setsid()
+            fcntl.ioctl(slave, __import__('termios').TIOCSCTTY, 0)
+        errors = (root / 'stderr').open('wb')
+        command = [BINARY]
+        if '-cli-' in mode: command += ['new', str(root)]
+        proc = subprocess.Popen(command, env=env, stdin=slave, stdout=slave, stderr=errors,
+                                preexec_fn=controlling_terminal)
+        output = b''
+        pids = []
+        def wait_for(predicate, label, seconds=5):
+            nonlocal output
+            until = time.monotonic() + seconds
+            while time.monotonic() < until:
+                if master is not None: output += read_ready(master, .01)
+                else: time.sleep(.01)
+                if predicate(): return
+            raise AssertionError(f'{mode}: {label}; board={proc.poll()}')
+        try:
+            if '-cli-' not in mode:
+                wait_for(lambda: b'1 projects' in output, 'initial scan missing')
+                os.write(master, b'n')
+                wait_for(lambda: b'Agent:' in output, 'agent picker missing')
+                os.write(master, b'c')
+            wait_for(lambda: (root / 'ready').exists(), 'sleeping child missing')
+            pids = list(map(int, (root / 'pids').read_text().split()))
+            started = time.monotonic()
+            if '-close-' in mode:
+                os.close(master)
+                master = None
+            else:
+                os.kill(proc.pid, signal.SIGHUP)
+            wait_for(lambda: proc.poll() is not None, 'hangup did not exit within 5s')
+            assert proc.returncode == 129, (mode, proc.returncode)
+            def gone():
+                for pid in pids:
+                    try: os.waitpid(pid, os.WNOHANG)
+                    except ChildProcessError: pass
+                    try: os.kill(pid, 0)
+                    except ProcessLookupError: continue
+                    return False
+                return True
+            wait_for(gone, 'orphan descendants survived', 3)
+            assert b'panicked' not in (root / 'stderr').read_bytes()
+            # No return to raw mode or alternate screen after terminal handoff hangup.
+            assert output.count(b'\x1b[?1049h') <= 1
+            print(f'{mode}: exit 129, descendants reaped, no terminal reentry ({time.monotonic() - started:.2f}s)')
+        finally:
+            if not pids and (root / 'pids').exists(): pids = list(map(int, (root / 'pids').read_text().split()))
+            for pid in pids + [proc.pid]:
+                try: os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError: pass
+            proc.wait(timeout=5)
+            for pid in pids:
+                until = time.monotonic() + 3
+                while True:
+                    try:
+                        if os.waitpid(pid, os.WNOHANG)[0]: break
+                    except ChildProcessError: break
+                    assert time.monotonic() < until, f'{mode}: cleanup did not reap {pid}'
+                    time.sleep(.01)
+            if master is not None: os.close(master)
+            os.close(slave)
+            errors.close()
+
+
 if __name__ == '__main__':
     BINARY = str(Path(sys.argv[1]).resolve())
     PROBE = str(Path(sys.argv[2]).resolve()) if len(sys.argv) > 2 else None
-    for mode in ([os.environ['SBOARD_PTY_CASE']] if 'SBOARD_PTY_CASE' in os.environ else ['TERM'] if PROBE is None else ['TERM', 'INT', 'HUP', 'hangup-stderr-pty', 'hangup-stderr-file', 'q', 'scan-panic', 'error', 'hook', 'dumb', 'stdin', 'idle', 'color-empty', 'color-off', 'unwatched', 'resume', 'attention-resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure', 'cli-termios', 'paste', 'paste-injection', 'typeahead', 'paste-long', 'paste-lock', 'escape-1', 'escape-20', 'escape-40', 'escape-bytewise', 'escape-bytewise-50', 'escape-alt', 'escape-alt-board', 'escape-alone', 'paste-timeout', 'paste-handoff', 'paste-nested', 'decoder-keys', 'escape-sequence-prefix', 'attention-fresh-pane', 'attention-collapsed-read', 'attention-read-in-child', 'tree-read-in-child', 'duplicate-open']):
-        case(mode)
+    for mode in ([os.environ['SBOARD_PTY_CASE']] if 'SBOARD_PTY_CASE' in os.environ else ['TERM'] if PROBE is None else ['child-hup-close-sleep', 'child-hup-direct-sleep', 'child-hup-close-stubborn', 'child-hup-direct-stubborn', 'child-hup-cli-direct-sleep', 'TERM', 'INT', 'HUP', 'hangup-stderr-pty', 'hangup-stderr-file', 'q', 'scan-panic', 'error', 'hook', 'dumb', 'stdin', 'idle', 'color-empty', 'color-off', 'unwatched', 'resume', 'attention-resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure', 'cli-termios', 'paste', 'paste-injection', 'typeahead', 'paste-long', 'paste-lock', 'escape-1', 'escape-20', 'escape-40', 'escape-bytewise', 'escape-bytewise-50', 'escape-alt', 'escape-alt-board', 'escape-alone', 'paste-timeout', 'paste-handoff', 'paste-nested', 'decoder-keys', 'escape-sequence-prefix', 'attention-fresh-pane', 'attention-collapsed-read', 'attention-read-in-child', 'tree-read-in-child', 'duplicate-open']):
+        if mode.startswith('child-hup-'): child_hangup_case(mode)
+        else: case(mode)

@@ -19,7 +19,11 @@ fn main() {
         }
         std::process::exit(code);
     });
-    match run(cli) {
+    let result = run(cli);
+    if session_board::launch::child_hung_up() {
+        std::process::exit(129);
+    }
+    match result {
         Ok(code) => std::process::exit(code),
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
         Err(error) => {
