@@ -101,17 +101,21 @@ def case(mode):
                 assert not (root / 'PWNED').exists()
                 assert not (root / 'WRONG').exists()
             elif mode == 'no-client':
-                # A real executable named claude supplies live pane/process metadata.
+                pane = run_tmux('new-window', '-P', '-F', '#{pane_id}', '-c', str(root), 'sleep', '60').stdout.decode().strip()
+                wait_for(lambda: run_tmux('display', '-p', '-t', pane, '#{pane_current_path}').stdout.decode().strip() == str(root), 'live pane missing')
+                # Fix only the agent label, as in the hash/race fixtures below. Renaming
+                # a copied system executable does not give a portable process name.
+                capture = run_tmux('display', '-p', '-t', pane,
+                    '#{n:session_name}:#{session_name}#{n:window_index}:#{window_index}#{n:pane_index}:#{pane_index}6:claude#{n:pane_pid}:#{pane_pid}#{n:pane_current_path}:#{pane_current_path}').stdout
+                (root / 'panes').write_bytes(capture)
+                env['PANES'] = str(root / 'panes')
+                env['REAL_TMUX'] = TMUX
+                shim = bindir / 'tmux'
+                shim.write_text('#!/bin/sh\nif [ "$3" = list-panes ]; then cat "$PANES"; else exec "$REAL_TMUX" "$@"; fi\n')
+                shim.chmod(0o755)
                 agent = bindir / 'claude'
-                shutil.copyfile(shutil.which('sleep'), agent)
+                agent.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$RECORD_ARGS"\n')
                 agent.chmod(0o755)
-                pane = run_tmux('new-window', '-P', '-F', '#{pane_id}', '-c', str(root), str(agent), '60').stdout.decode().strip()
-                wait_for(lambda: run_tmux('display', '-p', '-t', pane, '#{pane_current_command}').stdout.strip() == b'claude', 'live agent pane missing')
-                # Atomic replacement leaves the live executable mapped and records any resume.
-                resume = bindir / 'resume'
-                resume.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$RECORD_ARGS"\n')
-                resume.chmod(0o755)
-                resume.replace(agent)
                 rows = [json.loads(line) for line in Path('fixtures/claude_code/project/done.jsonl').read_text().splitlines()]
                 for row in rows:
                     if 'cwd' in row: row['cwd'] = str(root)
