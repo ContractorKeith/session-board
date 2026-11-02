@@ -255,29 +255,19 @@ impl Drop for Delivery {
     }
 }
 type Identity = (PathBuf, String);
-struct Observed {
-    status: Status,
-    raw_activity: i64,
-    watermark: i64,
+struct Announced {
+    event: (Status, i64),
+    floor_activity: Option<i64>,
 }
 #[derive(Default)]
 pub struct Transitions {
-    previous: HashMap<Identity, Observed>,
-    announced: HashMap<Identity, Vec<(Status, i64)>>,
-    scanned_at: Option<i64>,
+    previous: HashMap<Identity, (Status, i64)>,
+    announced: HashMap<Identity, Vec<Announced>>,
+    clock: Option<i64>,
 }
 impl Transitions {
     pub fn scan(&mut self, projects: &[Project], enabled: bool, notifier: &mut impl Notifier) {
-        self.scan_started(projects, enabled, notifier, unix_time());
-    }
-    pub fn scan_started(
-        &mut self,
-        projects: &[Project],
-        enabled: bool,
-        notifier: &mut impl Notifier,
-        started_at: i64,
-    ) {
-        self.scan_times(projects, enabled, notifier, started_at, unix_time());
+        self.scan_at(projects, enabled, notifier, unix_time());
     }
     pub fn scan_at(
         &mut self,
@@ -286,16 +276,14 @@ impl Transitions {
         notifier: &mut impl Notifier,
         now: i64,
     ) {
-        self.scan_times(projects, enabled, notifier, now, now);
-    }
-    fn scan_times(
-        &mut self,
-        projects: &[Project],
-        enabled: bool,
-        notifier: &mut impl Notifier,
-        started_at: i64,
-        now: i64,
-    ) {
+        // Raw pairs still deduplicate across clock steps; floors belong to one clock interval.
+        if self.clock.is_some_and(|previous| now < previous) {
+            for history in self.announced.values_mut() {
+                for entry in history {
+                    entry.floor_activity = None;
+                }
+            }
+        }
         let mut current = HashMap::new();
         let mut notices = Vec::with_capacity(5);
         let mut changed_count = 0;
@@ -305,42 +293,21 @@ impl Transitions {
                 if current.contains_key(&key) {
                     continue;
                 }
-                let activity = session.last_activity_at.min(now);
-                let old = self.previous.get(&key);
                 let event = (session.status, session.last_activity_at);
-                let announced = self
-                    .announced
-                    .get(&key)
-                    .is_some_and(|events| events.contains(&event));
-                let changed = self.scanned_at.is_some_and(|previous_scan| {
-                    old.map_or(activity >= previous_scan, |seen| {
-                        // A corrected clock can put a new activity below the old watermark.
-                        let watermark = seen.watermark.min(now);
-                        seen.status != session.status
-                            || (matches!(session.status, Status::Waiting | Status::Done)
-                                && seen.raw_activity != session.last_activity_at
-                                && (activity >= watermark || seen.watermark > now))
-                    })
-                });
-                // An unchanged future timestamp or a replay must not advance the clock.
-                let watermark = old.map_or(activity, |seen| {
-                    if announced || seen.raw_activity == session.last_activity_at {
-                        seen.watermark.min(now)
-                    } else {
-                        seen.watermark.max(activity).min(now)
-                    }
-                });
-                current.insert(
-                    key.clone(),
-                    Observed {
-                        status: session.status,
-                        raw_activity: session.last_activity_at,
-                        watermark,
-                    },
-                );
+                let history = self.announced.get(&key);
+                let announced =
+                    history.is_some_and(|events| events.iter().any(|e| e.event == event));
+                let floor = history.and_then(|events| events.iter().find_map(|e| e.floor_activity));
+                let changed = self.clock.is_some()
+                    && self.previous.get(&key).map_or(
+                        now.saturating_sub(session.last_activity_at) <= 5 * 60,
+                        |seen| *seen != event,
+                    );
+                current.insert(key.clone(), event);
                 if enabled
                     && changed
                     && !announced
+                    && floor.is_none_or(|oldest| session.last_activity_at >= oldest)
                     && matches!(
                         session.status,
                         Status::Waiting | Status::Done | Status::Error
@@ -350,7 +317,10 @@ impl Transitions {
                     if history.len() == 32 {
                         history.remove(0);
                     }
-                    history.push(event);
+                    history.push(Announced {
+                        event,
+                        floor_activity: Some(session.last_activity_at.min(now)),
+                    });
                     changed_count += 1;
                     if changed_count > 5 {
                         continue;
@@ -382,7 +352,7 @@ impl Transitions {
         }
         // Missing stores and rolled-back transcripts must not erase known activity.
         self.previous.extend(current);
-        self.scanned_at = Some(started_at);
+        self.clock = Some(now);
     }
 }
 
@@ -391,4 +361,31 @@ fn unix_time() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn announcement_storage_is_bounded_even_when_the_floor_hides_eviction() {
+        let mut projects: Vec<Project> =
+            serde_json::from_str(include_str!("../tests/fixtures/attention-projects.json"))
+                .unwrap();
+        projects.truncate(1);
+        projects[0].sessions.truncate(1);
+        projects[0].sessions[0].status = Status::Working;
+        let mut tracker = Transitions::default();
+        let mut recording = Recording::default();
+        tracker.scan_at(&projects, true, &mut recording, 1000);
+        for activity in 1001..=1040 {
+            projects[0].sessions[0].status = Status::Waiting;
+            projects[0].sessions[0].last_activity_at = activity;
+            tracker.scan_at(&projects, true, &mut recording, activity);
+        }
+        assert_eq!(recording.calls.len(), 40);
+        let history = tracker.announced.values().next().unwrap();
+        assert_eq!(history.len(), 32);
+        assert_eq!(history[0].event, (Status::Waiting, 1009));
+    }
 }

@@ -518,7 +518,7 @@ fn a_new_question_after_clock_rollback_notifies_once() {
 }
 
 #[test]
-fn notification_replay_history_keeps_exactly_the_last_32_events() {
+fn notification_replay_history_keeps_32_events_and_rejects_older_replays() {
     use session_board::model::Status;
     let mut p = projects(std::path::Path::new("fixtures/claude_code"));
     p[0].sessions.truncate(1);
@@ -548,8 +548,8 @@ fn notification_replay_history_keeps_exactly_the_last_32_events() {
     assert_eq!(replay(NOW + 2, NOW + 35), 33, "a retained event repeated");
     assert_eq!(
         replay(NOW + 1, NOW + 36),
-        34,
-        "history grew beyond 32 events"
+        33,
+        "evicted activity older than the retained floor repeated"
     );
 }
 
@@ -571,5 +571,106 @@ fn an_unchanged_scan_after_clock_rollback_does_not_hide_the_next_question() {
         p[0].sessions[0].last_activity_at = activity;
         tracker.scan_at(&p, true, &mut record, now);
     }
+    assert_eq!(record.calls.len(), 2);
+}
+
+#[test]
+fn first_seen_waiting_after_clock_step_uses_current_age() {
+    use session_board::model::Status;
+    let mut p = projects(std::path::Path::new("fixtures/claude_code"));
+    p[0].sessions.truncate(1);
+    let mut tracker = Transitions::default();
+    let mut record = Recording::default();
+    tracker.scan_at(&[], true, &mut record, 1_793_602_000);
+    p[0].sessions[0].status = Status::Waiting;
+    p[0].sessions[0].last_activity_at = 1_793_601_902;
+    tracker.scan_at(&p, true, &mut record, 1_793_601_902);
+    tracker.scan_at(&p, true, &mut record, 1_793_601_903);
+    assert_eq!(record.calls.len(), 1, "new session lost after clock step");
+}
+
+#[test]
+fn an_in_scan_question_survives_an_unchanged_result_after_clock_step() {
+    use session_board::model::Status;
+    let mut p = projects(std::path::Path::new("fixtures/claude_code"));
+    p[0].sessions.truncate(1);
+    let mut tracker = Transitions::default();
+    let mut record = Recording::default();
+    for (status, activity, now) in [
+        (Status::Working, 1_793_601_999, 1_793_601_999),
+        (Status::Waiting, 1_793_602_000, 1_793_602_000),
+        (Status::Waiting, 1_793_602_000, 1_793_601_902),
+        (Status::Waiting, 1_793_601_901, 1_793_601_903),
+        (Status::Waiting, 1_793_601_901, 1_793_601_904),
+    ] {
+        p[0].sessions[0].status = status;
+        p[0].sessions[0].last_activity_at = activity;
+        tracker.scan_at(&p, true, &mut record, now);
+    }
+    assert_eq!(
+        record.calls.len(),
+        2,
+        "in-scan question lost below the old watermark"
+    );
+}
+
+#[test]
+fn forty_announcements_do_not_reannounce_an_evicted_first_event() {
+    use session_board::model::Status;
+    let mut p = projects(std::path::Path::new("fixtures/claude_code"));
+    p[0].sessions.truncate(1);
+    let mut tracker = Transitions::default();
+    let mut record = Recording::default();
+    p[0].sessions[0].status = Status::Working;
+    tracker.scan_at(&p, true, &mut record, NOW);
+    for activity in NOW + 1..=NOW + 40 {
+        p[0].sessions[0].status = Status::Waiting;
+        p[0].sessions[0].last_activity_at = activity;
+        tracker.scan_at(&p, true, &mut record, activity);
+    }
+    assert_eq!(record.calls.len(), 40);
+    p[0].sessions[0].status = Status::Working;
+    tracker.scan_at(&p, true, &mut record, NOW + 41);
+    p[0].sessions[0].status = Status::Waiting;
+    p[0].sessions[0].last_activity_at = NOW + 1;
+    tracker.scan_at(&p, true, &mut record, NOW + 41);
+    assert_eq!(
+        record.calls.len(),
+        40,
+        "evicted first event was announced again"
+    );
+}
+
+#[test]
+fn first_seen_age_window_is_inclusive_and_uses_only_the_current_clock() {
+    use session_board::model::Status;
+    for (age, expected) in [(0, 1), (300, 1), (301, 0), (3 * 86400, 0)] {
+        let mut p = projects(std::path::Path::new("fixtures/claude_code"));
+        p[0].sessions.truncate(1);
+        p[0].sessions[0].status = Status::Waiting;
+        p[0].sessions[0].last_activity_at = NOW - age;
+        let mut tracker = Transitions::default();
+        let mut record = Recording::default();
+        tracker.scan_at(&[], true, &mut record, NOW + 86400);
+        tracker.scan_at(&p, true, &mut record, NOW);
+        assert_eq!(record.calls.len(), expected, "age {age}");
+    }
+}
+
+#[test]
+fn known_error_activity_changes_are_not_gated_by_scan_time_or_age() {
+    use session_board::model::Status;
+    let mut p = projects(std::path::Path::new("fixtures/claude_code"));
+    p[0].sessions.truncate(1);
+    p[0].sessions[0].status = Status::Working;
+    p[0].sessions[0].last_activity_at = NOW - 3 * 86400;
+    let mut tracker = Transitions::default();
+    let mut record = Recording::default();
+    tracker.scan_at(&p, true, &mut record, NOW);
+    p[0].sessions[0].status = Status::Error;
+    tracker.scan_at(&p, true, &mut record, NOW + 1);
+    p[0].sessions[0].last_activity_at += 1;
+    tracker.scan_at(&p, true, &mut record, NOW + 2);
+    tracker.scan_at(&p, true, &mut record, NOW + 3);
     assert_eq!(record.calls.len(), 2);
 }

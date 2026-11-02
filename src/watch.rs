@@ -16,7 +16,7 @@ use std::{
         mpsc::{self, Receiver, SyncSender},
     },
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 pub const DEBOUNCE: Duration = Duration::from_secs(2);
@@ -174,7 +174,7 @@ impl Drop for StoreWatcher {
 
 pub struct Scans {
     pub requests: SyncSender<()>,
-    pub results: Receiver<io::Result<(i64, scan::Scan)>>,
+    pub results: Receiver<io::Result<scan::Scan>>,
     pub status: Receiver<Vec<String>>,
     cancelled: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
@@ -233,10 +233,6 @@ impl Scans {
                 if stop.load(Ordering::Relaxed) {
                     break;
                 }
-                let started_at = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64;
                 let result =
                     catch_unwind(AssertUnwindSafe(|| scan(first))).unwrap_or_else(|panic| {
                         let message = panic
@@ -247,10 +243,7 @@ impl Scans {
                         Err(io::Error::other(format!("panicked: {message}")))
                     });
                 first = false;
-                if completed
-                    .send(result.map(|scan| (started_at, scan)))
-                    .is_err()
-                {
+                if completed.send(result).is_err() {
                     break;
                 }
             }

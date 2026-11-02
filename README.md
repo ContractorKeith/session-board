@@ -55,7 +55,9 @@ The pane uses at most one third of the terminal, with a three-line minimum when 
 
 Desktop notifications are off by default. Add `notify = true` at the top level of
 `config.toml` to notify on transitions into waiting, done or error. The first scan
-is silent. Linux uses `notify-send --app-name sboard`; macOS uses `osascript`.
+is silent. Sessions first discovered later notify only if their activity is at most five
+minutes old; known sessions notify when their status/activity pair changes. Linux uses
+`notify-send --app-name sboard`; macOS uses `osascript`.
 Delivery runs off the UI thread through a bounded queue. More than five transitions in one
 scan produce one summary; commands exceeding five seconds are killed. Missing or failing
 commands warn once in the status bar, and a missing command becomes a no-op.

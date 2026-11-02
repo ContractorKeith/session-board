@@ -374,14 +374,14 @@ fn scans_initial_watcher_wiring_and_panic_recovery() {
         .recv_timeout(Duration::from_secs(8))
         .unwrap()
         .unwrap();
-    assert_eq!(initial.1.projects[0].sessions[0].status, Status::Working);
+    assert_eq!(initial.projects[0].sessions[0].status, Status::Working);
     fs::copy("fixtures/claude_code/project/waiting.jsonl", &path).unwrap();
     let refreshed = scans
         .results
         .recv_timeout(Duration::from_secs(10))
         .unwrap()
         .unwrap();
-    assert_eq!(refreshed.1.projects[0].sessions[0].status, Status::Waiting);
+    assert_eq!(refreshed.projects[0].sessions[0].status, Status::Waiting);
 }
 
 #[test]
@@ -421,7 +421,6 @@ fn quiet_store_status_crosses_threshold() {
             .recv_timeout(Duration::from_secs(5))
             .unwrap()
             .unwrap()
-            .1
             .projects[0]
             .sessions[0]
             .status,
@@ -433,7 +432,6 @@ fn quiet_store_status_crosses_threshold() {
             .recv_timeout(Duration::from_secs(5))
             .unwrap()
             .unwrap()
-            .1
             .projects[0]
             .sessions[0]
             .status,
