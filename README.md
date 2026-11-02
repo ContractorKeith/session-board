@@ -6,7 +6,7 @@ project, shows working / waiting / idle / error / done, jumps to the tmux pane o
 session, and launches new sessions in a project or a fresh git worktree. Observes agents; never
 owns them. MIT.
 
-Status: v0.1.0. See `docs/PLAN.md` for scope and `AGENTS.md` for commands.
+Status: v0.1.0 release candidate. See `docs/PLAN.md` for scope and `AGENTS.md` for commands.
 The package is `session-board`; the binary is `sboard`.
 
 ## Install

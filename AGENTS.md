@@ -9,7 +9,7 @@ MIT. "Done" for v1 is every row marked v1 in `docs/PLAN.md` §4 passing the acce
 §10 on Omarchy, the Mac Studio and GitHub Actions.
 
 ## Status
-v0.1.0 — release workflow, binaries and install notes; platform acceptance tracked in M7 (#8).
+v0.1.0 release candidate — release workflow, binaries and install notes; acceptance in M7 (#8).
 M0–M6 merged. OpenCode is fixture-only, unverified live.
 Keith tags the release after M7 merges.
 
@@ -53,9 +53,8 @@ cargo run -- doctor
 
 ## Tracking
 - GitHub issues are the tickets, one per milestone, label `milestone`.
-- Basecamp project "github" (card table) has one card per milestone titled
-  `session-board Mn: ...` linking the issue and the PLAN section. Move the card to In progress
-  when the branch opens and to Done when the PR merges. No per-issue cards.
+- Basecamp project "github" has one `session-board` card with M0–M7 steps.
+  Complete each step when its PR merges; move the card to Done when the release tags.
 
 ## Out of Scope
 - Editor, persona builder, chat surface, sub-agent trees, Docker sandbox, conductor bots. Never.
