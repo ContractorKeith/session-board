@@ -1,0 +1,3 @@
+{"type": "user", "sessionId": "exit", "cwd": "/home/user/project", "timestamp": "2026-11-01T11:00:00Z", "message": {"role": "user", "content": "Real prompt."}}
+{"type": "user", "sessionId": "exit", "cwd": "/home/user/project", "timestamp": "2026-11-01T11:00:00Z", "message": {"role": "user", "content": "<command-name>/exit</command-name>"}}
+{"type": "user", "sessionId": "exit", "cwd": "/home/user/project", "timestamp": "2026-11-01T11:00:00Z", "message": {"role": "user", "content": "<local-command-stdout>See ya!</local-command-stdout>"}}

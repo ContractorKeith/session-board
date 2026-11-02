@@ -192,24 +192,22 @@ pub fn resume_command(session: &Session) -> io::Result<Command> {
     Ok(command)
 }
 pub fn open(session: &Session, socket: &str) -> io::Result<String> {
-    let mut jump_error = None;
     if let Some(target) = &session.pane {
-        match tmux::jump(socket, target) {
-            Ok(()) => {
-                return Ok(with_notice(
-                    format!("jumped to {target}"),
-                    &tmux::connect(socket),
-                ));
-            }
-            Err(e) => jump_error = Some(e),
-        }
+        tmux::jump(socket, target)
+            .map_err(|error| io::Error::other(format!("tmux jump to {target} failed: {error}")))?;
+        return Ok(with_notice(
+            format!("jumped to {target}"),
+            &tmux::connect(socket),
+        ));
     }
     run(&mut resume_command(session)?)?;
-    Ok(match jump_error {
-        Some(error) => format!("{error}; resumed {}", session.id),
-        None => format!("resumed {}", session.id),
-    })
+    Ok(format!(
+        "resumed {} in {}",
+        session.id,
+        session.cwd.display()
+    ))
 }
+
 fn with_notice(message: String, connection: &tmux::Connection) -> String {
     match &connection.notice {
         Some(notice) => format!("{notice}; {message}"),

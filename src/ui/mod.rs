@@ -3,6 +3,7 @@ mod detail;
 mod input;
 mod open;
 mod organize;
+mod output;
 mod tree;
 
 use crate::watch::Scans;
@@ -14,7 +15,7 @@ use crossterm::{
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
-    DefaultTerminal, Frame,
+    Frame,
     layout::{Constraint, Layout},
     widgets::{Block, Borders, Paragraph},
 };
@@ -30,6 +31,8 @@ use std::{
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+type DefaultTerminal = ratatui::Terminal<ratatui::backend::CrosstermBackend<output::Output>>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Row {
@@ -105,9 +108,9 @@ impl App {
         let result = f();
         session_board::launch::restore_terminal();
         terminal::enable_raw_mode()?;
-        execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
+        execute!(output::Output, EnterAlternateScreen, EnableBracketedPaste)?;
         execute!(
-            io::stdout(),
+            output::Output,
             terminal::Clear(terminal::ClearType::All),
             crossterm::cursor::MoveTo(0, 0)
         )?;
@@ -343,7 +346,7 @@ fn restore() {
     let _ = terminal::disable_raw_mode();
     session_board::launch::restore_terminal();
     let _ = execute!(
-        io::stdout(),
+        output::Output,
         DisableBracketedPaste,
         LeaveAlternateScreen,
         crossterm::cursor::Show
@@ -387,6 +390,9 @@ pub fn run() -> io::Result<i32> {
     if signal != 0 {
         return Ok(128 + signal as i32);
     }
+    if output::closed() {
+        return Ok(128 + signal_hook::consts::SIGHUP);
+    }
     result?;
     Ok(0)
 }
@@ -394,6 +400,7 @@ pub fn run() -> io::Result<i32> {
 pub(crate) fn terminal_session(
     operation: impl FnOnce(&mut DefaultTerminal) -> io::Result<()>,
 ) -> io::Result<()> {
+    output::reset();
     session_board::launch::capture_terminal()?;
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -404,9 +411,9 @@ pub(crate) fn terminal_session(
     }));
     let _guard = TerminalGuard;
     terminal::enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
+    execute!(output::Output, EnterAlternateScreen, EnableBracketedPaste)?;
     let mut terminal =
-        ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
+        ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(output::Output))?;
     operation(&mut terminal)
 }
 

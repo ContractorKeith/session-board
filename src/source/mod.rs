@@ -18,6 +18,7 @@ pub struct SourceScan {
     pub skipped_lines: usize,
     pub skipped_stores: usize,
     pub skipped_sessions: usize,
+    pub skipped_session_reasons: std::collections::BTreeMap<String, usize>,
     pub warnings: Vec<String>,
     pub status_reasons: Vec<String>,
 }

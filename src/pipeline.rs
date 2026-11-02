@@ -135,6 +135,20 @@ pub fn run(roots: &mut ProjectRoots, options: &Options) -> io::Result<Outcome> {
         },
         options.group.unwrap_or_default(),
     );
+    if !missing
+        && !options.all
+        && options.status.is_none()
+        && result.warnings.is_empty()
+        && result
+            .projects
+            .iter()
+            .all(|project| project.sessions.is_empty())
+    {
+        warnings.push(format!(
+            "no sessions in the last {} days; use --all",
+            config.window_days
+        ));
+    }
     warnings.append(&mut result.warnings);
     warnings.extend(roots.take_warnings());
     result.warnings = warnings;

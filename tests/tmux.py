@@ -100,6 +100,32 @@ def case(mode):
                 assert (root / 'cwd').read_text().removesuffix('\n') == str(root / 'evil#(touch PWNED)-wt/x#S')
                 assert not (root / 'PWNED').exists()
                 assert not (root / 'WRONG').exists()
+            elif mode == 'no-client':
+                # A real executable named claude supplies live pane/process metadata.
+                agent = bindir / 'claude'
+                shutil.copyfile(shutil.which('sleep'), agent)
+                agent.chmod(0o755)
+                pane = run_tmux('new-window', '-P', '-F', '#{pane_id}', '-c', str(root), str(agent), '60').stdout.decode().strip()
+                wait_for(lambda: run_tmux('display', '-p', '-t', pane, '#{pane_current_command}').stdout.strip() == b'claude', 'live agent pane missing')
+                # Atomic replacement leaves the live executable mapped and records any resume.
+                resume = bindir / 'resume'
+                resume.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$RECORD_ARGS"\n')
+                resume.chmod(0o755)
+                resume.replace(agent)
+                rows = [json.loads(line) for line in Path('fixtures/claude_code/project/done.jsonl').read_text().splitlines()]
+                for row in rows:
+                    if 'cwd' in row: row['cwd'] = str(root)
+                    if 'timestamp' in row: row['timestamp'] = datetime.now(timezone.utc).isoformat()
+                (root / 'claude/projects/project').mkdir()
+                (root / 'claude/projects/project/session.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
+                env['TMUX'] = tmux_env
+                assert not run_tmux('list-clients').stdout.strip()
+                result = board('open', 'claude_code:done')
+                assert result.returncode != 0, (result.returncode, result.stdout, result.stderr)
+                assert not (root / 'args').exists(), 'failed jump started a second agent'
+                assert not result.stdout and len(result.stderr.splitlines()) == 1, (result.stdout, result.stderr)
+                assert b'error:' in result.stderr and b'no current client' in result.stderr, result.stderr
+                print('no-client: exit nonzero; one tmux error; no resume child started')
             elif mode in ('hash-jump', 'jump-race'):
                 victim = root / 'victim-界é'
                 victim.mkdir()
@@ -154,7 +180,7 @@ exec "$REAL_TMUX" -S "$socket" "$@"
                 wrapper.chmod(0o755)
                 run_tmux('new-window', '-t', '=test', '-c', str(root), str(wrapper))
                 wait_for(lambda: (root / 'exit').exists(), 'open did not return')
-                assert (root / 'exit').read_text().strip() == '0'
+                assert (root / 'exit').read_text().strip() == ('0' if mode == 'hash-jump' else '1')
                 if mode == 'hash-jump':
                     try:
                         wait_for(lambda: run_tmux('list-clients', '-F', '#{client_session}').stdout.strip() == b'a#b',
@@ -168,7 +194,7 @@ exec "$REAL_TMUX" -S "$socket" "$@"
                     assert (root / 'raced').exists(), ('shim never removed the target; calls=' +
                         ((root / 'panes.calls').read_text() if (root / 'panes.calls').exists() else '<none>') +
                         '; resume=' + repr((root / 'args').read_bytes() if (root / 'args').exists() else None))
-                    assert (root / 'args').read_text() == '--resume=done\n', 'jump failure did not resume'
+                    assert not (root / 'args').exists(), 'jump failure started a second copy'
             elif mode == 'injection':
                 env['TMUX'] = tmux_env
                 victim = root / 'victim'

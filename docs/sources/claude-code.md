@@ -10,8 +10,9 @@ queue-operation, atis-latch, last-prompt, pr-link, cost-state, mode,
 permission-mode and file-history records. Text is a string or text blocks;
 thinking/tool blocks are not prose. User text starting with `<` does not become
 the title or last user text. First eligible prompt is the 60-character fallback
-title. All titles collapse whitespace and strip controls/escape commands into one
-printable line. Display detail text retains the original eligible prose.
+title; when no eligible title or prompt exists, use the native session id. All
+titles collapse whitespace and strip controls/escape commands into one printable
+line. Display detail text retains the original eligible prose.
 
 The first message cwd is the launch directory; later changes are ignored. Empty
 or relative cwds skip the session with a count. Shared normalization canonicalizes
@@ -33,6 +34,16 @@ records count as skipped lines; seam fragments do not. Empty/unreadable or inval
 sessions increment skipped sessions. Missing/unreadable stores increment skipped
 stores. Omitted middle records are not validated. Doctor scans all ages and gives
 stale-call reasons; list applies its configured window and never emits those reasons.
+
+Local-command user text starts with a `<command-name>`, `<command-message>` or
+`<local-command-stdout>` wrapper. These records do not open pending turns and do
+not supply titles or last user text. `/exit` (including the command-message
+variant) clears pending, ended and API-error evidence, yielding idle. Other local
+commands preserve the previous turn's status and activity timestamp; command-only
+sessions are idle. Quoted wrappers later in a real prompt are ordinary text.
+During sampling, non-exit local commands do not stop meaningful-tail recovery;
+`/exit` does. Fixtures in `fixtures/release-blockers/claude/` cover `/exit`,
+`/login`, `/clear`, `/compact` and a command followed by a real prompt.
 
 PLAN §6 first-match rules, thresholds in `src/status.rs`:
 

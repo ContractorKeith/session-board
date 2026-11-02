@@ -85,6 +85,8 @@ def case(mode):
         if mode == 'socket-mismatch':
             (root / 'config').mkdir()
             (root / 'config/config.toml').write_text('[tmux]\nsocket = "other"\n')
+        if mode == 'stale-pane':
+            (bindir / 'tmux').write_text('#!/bin/sh\nif [ "$1" = -S ] || [ "$1" = -L ]; then shift 2; fi\nif [ "$1" = list-panes ]; then [ -f "$PANES" ] && cat "$PANES"; elif [ "$1" = display ]; then if [ "$3" = -t ]; then [ -f "$PANES" ] || exit 1; fi; echo %0; else exit 0; fi\n')
         if mode == 'vanished-pane':
             (bindir / 'tmux').write_text('#!/bin/sh\nif [ "$1" = -S ] || [ "$1" = -L ]; then shift 2; fi\nif [ "$1" = list-panes ]; then cat "$PANES"; elif [ "$1" = display ]; then [ "$3" = -t ] && exit 1; echo %0; else exit 0; fi\n')
         if mode == 'jump-failure':
@@ -162,13 +164,14 @@ def case(mode):
             args = ['script', '-qefc', text, str(typescript)]
         master, slave = pty.openpty()
         fcntl.ioctl(slave, __import__('termios').TIOCSWINSZ, struct.pack('HHHH', 30, 100, 0, 0))
-        direct = mode.startswith('escape-') or mode in ('paste-timeout', 'paste-handoff', 'paste-nested', 'decoder-keys')
+        direct = mode.startswith('hangup-') or mode.startswith('escape-') or mode in ('paste-timeout', 'paste-handoff', 'paste-nested', 'decoder-keys')
+        stderr_file = (root / 'stderr').open('wb') if mode == 'hangup-stderr-file' else None
         if direct:
             # Timed bytes must reach the board's PTY without script(1)'s relay.
             def controlling_terminal():
                 os.setsid()
                 fcntl.ioctl(slave, __import__('termios').TIOCSCTTY, 0)
-            proc = subprocess.Popen(command, env=env, stdin=slave, stdout=slave, stderr=slave,
+            proc = subprocess.Popen(command, env=env, stdin=slave, stdout=slave, stderr=stderr_file if stderr_file else slave,
                                     preexec_fn=controlling_terminal)
             pidfile.write_text(str(proc.pid))
         else:
@@ -227,6 +230,15 @@ def case(mode):
                 return
             wait_for(lambda: b'Projects' in output, 'no initial frame')
             pid = int(pidfile.read_text())
+            if mode.startswith('hangup-'):
+                os.close(master)
+                master = None
+                code = proc.wait(timeout=5)
+                stderr = (root / 'stderr').read_bytes() if stderr_file else b''
+                assert code in (0, 129), (mode, code, stderr)
+                assert b'panicked' not in stderr and b'Failed to show the cursor' not in stderr, stderr
+                print(f'{mode}: hangup exit {code}, no restore panic')
+                return
             if mode == 'scan-panic':
                 wait_for(lambda: 'scan: panicked' in screen(output), 'worker panic was hidden or deadlocked')
                 assert 'Projects' in screen(output) and '? help' in screen(output)
@@ -469,9 +481,15 @@ def case(mode):
                 wait_for(lambda: 'Pane: dev:2.1' in screen(output), 'initial pane not assigned')
                 if mode == 'stale-pane': (root / 'panes').unlink()
                 os.write(master, b'\r')
-                wait_for(lambda: (root / 'flags').exists() and 'resumed ' in screen(output) and output.count(b'\x1b[?1049h') >= 2, 'Enter did not suspend around stale-pane fallback')
+                wait_for(lambda: 'error:' in screen(output), 'jump failure was not reported')
+                assert not (root / 'flags').exists(), 'jump failure resumed a second copy'
+                until = time.monotonic() + 1.2
+                while time.monotonic() < until: pump()
+                assert 'error:' in screen(output), 'age tick cleared jump error before next key'
                 if mode == 'jump-failure': assert 'pane-gone' in screen(output), 'tmux failure message was lost'
                 if mode == 'attach-failure': assert 'attach-denied' in screen(output), 'tmux attach message was lost'
+                os.write(master, b'j')
+                wait_for(lambda: 'error:' not in screen(output), 'next key did not clear jump error')
                 os.write(master, b'q')
             elif mode in ('termios', 'child-int', 'message'):
                 wait_for(lambda: '1 projects' in screen(output), 'initial scan did not arrive')
@@ -551,11 +569,12 @@ def case(mode):
                     except ProcessLookupError: pass
                 proc.kill()
                 proc.wait(timeout=5)
-            os.close(master)
+            if master is not None: os.close(master)
             os.close(slave)
+            if stderr_file: stderr_file.close()
 
 if __name__ == '__main__':
     BINARY = str(Path(sys.argv[1]).resolve())
     PROBE = str(Path(sys.argv[2]).resolve()) if len(sys.argv) > 2 else None
-    for mode in ([os.environ['SBOARD_PTY_CASE']] if 'SBOARD_PTY_CASE' in os.environ else ['TERM'] if PROBE is None else ['TERM', 'INT', 'HUP', 'q', 'scan-panic', 'error', 'hook', 'dumb', 'stdin', 'idle', 'color-empty', 'color-off', 'unwatched', 'resume', 'attention-resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure', 'cli-termios', 'paste', 'paste-injection', 'typeahead', 'paste-long', 'paste-lock', 'escape-1', 'escape-20', 'escape-40', 'escape-bytewise', 'escape-bytewise-50', 'escape-alt', 'escape-alt-board', 'escape-alone', 'paste-timeout', 'paste-handoff', 'paste-nested', 'decoder-keys', 'escape-sequence-prefix', 'attention-fresh-pane', 'attention-collapsed-read', 'attention-read-in-child', 'tree-read-in-child', 'duplicate-open']):
+    for mode in ([os.environ['SBOARD_PTY_CASE']] if 'SBOARD_PTY_CASE' in os.environ else ['TERM'] if PROBE is None else ['TERM', 'INT', 'HUP', 'hangup-stderr-pty', 'hangup-stderr-file', 'q', 'scan-panic', 'error', 'hook', 'dumb', 'stdin', 'idle', 'color-empty', 'color-off', 'unwatched', 'resume', 'attention-resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure', 'cli-termios', 'paste', 'paste-injection', 'typeahead', 'paste-long', 'paste-lock', 'escape-1', 'escape-20', 'escape-40', 'escape-bytewise', 'escape-bytewise-50', 'escape-alt', 'escape-alt-board', 'escape-alone', 'paste-timeout', 'paste-handoff', 'paste-nested', 'decoder-keys', 'escape-sequence-prefix', 'attention-fresh-pane', 'attention-collapsed-read', 'attention-read-in-child', 'tree-read-in-child', 'duplicate-open']):
         case(mode)

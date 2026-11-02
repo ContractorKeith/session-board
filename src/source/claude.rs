@@ -31,11 +31,44 @@ impl Source for Claude {
         result
     }
 }
+#[derive(PartialEq)]
+enum LocalCommand {
+    Exit,
+    Other,
+}
+
+fn local_command(text: &str) -> Option<LocalCommand> {
+    let text = text.trim_start();
+    if ![
+        "<command-name>",
+        "<command-message>",
+        "<local-command-stdout>",
+    ]
+    .iter()
+    .any(|tag| text.starts_with(tag))
+    {
+        return None;
+    }
+    for tag in ["command-name", "command-message"] {
+        if let Some(value) = text
+            .split_once(&format!("<{tag}>"))
+            .and_then(|(_, rest)| rest.split_once(&format!("</{tag}>")))
+            .map(|(value, _)| value.trim())
+            && matches!(value, "/exit" | "exit")
+        {
+            return Some(LocalCommand::Exit);
+        }
+    }
+    Some(LocalCommand::Other)
+}
+
 fn meaningful(v: &serde_json::Value) -> bool {
     v["isSidechain"] != true
         && v["isMeta"] != true
         && matches!(v["type"].as_str(), Some("user" | "assistant"))
         && read::timestamp(&v["timestamp"]).is_some()
+        && (v["type"] != "user"
+            || local_command(&read::text(&v["message"]["content"])) != Some(LocalCommand::Other))
 }
 
 fn session(path: &Path, now: i64, result: &mut SourceScan) -> Option<Session> {
@@ -92,9 +125,20 @@ fn session(path: &Path, now: i64, result: &mut SourceScan) -> Option<Session> {
             continue;
         }
         started.get_or_insert(time);
-        last = Some(time);
         let message = &v["message"];
         let text = read::text(&message["content"]);
+        if kind == "user"
+            && let Some(command) = local_command(&text)
+        {
+            // Commands supply metadata but do not refresh the previous turn's clock.
+            last.get_or_insert(time);
+            if command == LocalCommand::Exit {
+                tail = Tail::default();
+                last = Some(time);
+            }
+            continue;
+        }
+        last = Some(time);
         tail.explicit_error =
             v["isApiErrorMessage"] == true || v.get("error").is_some_and(|e| !e.is_null());
         let tool = message["content"]
@@ -133,8 +177,18 @@ fn session(path: &Path, now: i64, result: &mut SourceScan) -> Option<Session> {
     }
     let cwd = normalize(&cwd, None)?;
     let last = last?;
+    title = read::title(&title);
     if title.is_empty() {
-        title = first_user.unwrap_or_default().chars().take(60).collect();
+        title = read::title(
+            &first_user
+                .unwrap_or_default()
+                .chars()
+                .take(60)
+                .collect::<String>(),
+        );
+    }
+    if title.is_empty() {
+        title = id.clone();
     }
     let status = status::derive(&tail, last, now);
     if tail.pending && status == crate::model::Status::Error {
@@ -147,7 +201,7 @@ fn session(path: &Path, now: i64, result: &mut SourceScan) -> Option<Session> {
         agent: Agent::ClaudeCode,
         project_root: cwd.clone(),
         cwd,
-        title: read::title(&title),
+        title,
         started_at: started?,
         last_activity_at: last,
         status,

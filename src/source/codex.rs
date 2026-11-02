@@ -111,17 +111,39 @@ fn meaningful(v: &serde_json::Value) -> bool {
             ))
 }
 
+fn skipped(result: &mut SourceScan, reason: &str) -> Option<Session> {
+    *result
+        .skipped_session_reasons
+        .entry(reason.into())
+        .or_default() += 1;
+    None
+}
+
 fn session(
     path: &Path,
     now: i64,
     titles: &HashMap<String, String>,
     result: &mut SourceScan,
 ) -> Option<Session> {
+    let previous_skipped_lines = result.skipped_lines;
     let (records, boundary) = read::records(path, result, |v| {
         meaningful(v) && read::timestamp(&v["timestamp"]).is_some()
     })
-    .map_err(|e| result.warnings.push(format!("{}: {e}", path.display())))
+    .map_err(|e| {
+        result.warnings.push(format!("{}: {e}", path.display()));
+        skipped(result, "unreadable or unsampleable transcript");
+    })
     .ok()?;
+    if records.is_empty() {
+        return skipped(
+            result,
+            if result.skipped_lines > previous_skipped_lines {
+                "no valid sampled records"
+            } else {
+                "empty transcript"
+            },
+        );
+    }
     let mut identity = None;
     let mut first_event_user = None;
     let mut last_event_user = None;
@@ -155,7 +177,7 @@ fn session(
                 None => p["source"].is_string(),
             };
             if !owner || p["source"].is_object() {
-                return None;
+                return skipped(result, "excluded non-user provenance");
             }
             identity = Some((
                 read::title(&read::string(p, "id")),
@@ -259,12 +281,21 @@ fn session(
             ..Default::default()
         };
     }
-    let (id, cwd) = identity?;
-    if id.is_empty() || !cwd.is_absolute() {
-        return None;
+    let Some((id, cwd)) = identity else {
+        return skipped(result, "missing session metadata");
+    };
+    if id.is_empty() {
+        return skipped(result, "empty session id");
     }
-    let cwd = normalize(&cwd, None)?;
-    let last = last?;
+    if !cwd.is_absolute() {
+        return skipped(result, "invalid cwd");
+    }
+    let Some(cwd) = normalize(&cwd, None) else {
+        return skipped(result, "invalid cwd");
+    };
+    let Some(last) = last else {
+        return skipped(result, "missing valid activity timestamp");
+    };
     let status = status::derive(&tail, last, now);
     if tail.pending && status == Status::Error {
         result.status_reasons.push(format!(

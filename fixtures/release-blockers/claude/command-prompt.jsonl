@@ -1,0 +1,2 @@
+{"type": "user", "sessionId": "command-prompt", "cwd": "/home/user/project", "timestamp": "2026-11-01T11:00:00Z", "message": {"role": "user", "content": "<command-name>/login</command-name>"}}
+{"type": "user", "sessionId": "command-prompt", "cwd": "/home/user/project", "timestamp": "2026-11-01T11:59:00Z", "message": {"role": "user", "content": "Actual prompt."}}

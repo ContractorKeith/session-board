@@ -32,10 +32,17 @@ fn main() {
 fn run(cli: Cli) -> io::Result<i32> {
     match cli.command {
         None => ui::run(),
-        Some(Commands::Open { session_id }) => {
-            cli::open(&session_id)?;
-            Ok(0)
-        }
+        Some(Commands::Open { session_id }) => match cli::open(&session_id) {
+            Ok(()) => Ok(0),
+            Err(error) => {
+                let _ = writeln!(
+                    io::stderr().lock(),
+                    "error: {}",
+                    session_board::source::title(&error.to_string())
+                );
+                Ok(1)
+            }
+        },
         Some(Commands::New {
             project_path,
             agent,
