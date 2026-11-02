@@ -306,9 +306,12 @@ fn empty_stores_list_and_cli_contract() {
         String::from_utf8(output.stdout).unwrap().trim(),
         env!("CARGO_PKG_VERSION")
     );
-    let output = command(temp.path()).output().unwrap();
+    let output = command(temp.path()).arg("--help").output().unwrap();
     assert!(output.status.success());
-    assert_eq!(output.stdout, b"TUI lands in M2\n");
+    let help = String::from_utf8(output.stdout).unwrap();
+    for name in ["list", "doctor", "version"] {
+        assert!(help.contains(name));
+    }
     let output = command(temp.path()).arg("unknown").output().unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(!temp.path().join("state").exists());
@@ -600,4 +603,16 @@ fn symlinked_config_and_state_files_load() {
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[0].root, Path::new("/from-link"));
     assert!(projects[0].pinned);
+}
+
+#[test]
+fn default_command_refuses_piped_stdout() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = command(temp.path()).output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "sboard: stdout is not a terminal; run sboard list for script output.\n"
+    );
 }

@@ -1,3 +1,6 @@
+mod ui;
+mod watch;
+
 use clap::Parser;
 use session_board::{
     cli::{self, Cli, Commands},
@@ -32,7 +35,7 @@ fn run(cli: Cli) -> io::Result<i32> {
     let mut exit = 0;
     let mut out = io::stdout().lock();
     match cli.command {
-        None => writeln!(out, "TUI lands in M2")?,
+        None => return ui::run(),
         Some(Commands::Version) => writeln!(out, "{}", env!("CARGO_PKG_VERSION"))?,
         Some(Commands::Doctor { json }) => cli::doctor(&mut out, &cli::home()?, json)?,
         Some(Commands::List {
