@@ -15,16 +15,25 @@ use std::{
 };
 use tempfile::TempDir;
 
+// Process fixtures run sequentially so the scan budget excludes competing test subprocesses.
+static PROCESS_FIXTURES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn process_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
+    PROCESS_FIXTURES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 fn script(path: &Path, text: &str) {
     fs::write(path, format!("#!/bin/sh\n{text}\n")).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 struct Sandbox {
     temp: TempDir,
+    _guard: std::sync::MutexGuard<'static, ()>,
 }
 impl Sandbox {
     fn new() -> Self {
         let s = Self {
+            _guard: process_fixture_guard(),
             temp: tempfile::tempdir().unwrap(),
         };
         for dir in [
@@ -460,7 +469,7 @@ fn issue55_failed_hook_rolls_back_new_worktree_and_branch() {
     s.repo();
     script(
         &s.path("project/.git/hooks/post-checkout"),
-        "echo 'hook refused' >&2\nexit 1",
+        "echo 'hook-denied' >&2\nexit 1",
     );
     failure(
         s.cmd()
@@ -469,7 +478,7 @@ fn issue55_failed_hook_rolls_back_new_worktree_and_branch() {
             .args(["--worktree", "retry"])
             .output()
             .unwrap(),
-        "worktree add failed:",
+        "hook-denied",
     );
     assert!(!s.path("project-wt/retry").exists());
     assert!(
@@ -547,7 +556,7 @@ fn issue52_tab_in_pane_path_is_matched() {
         s.path("panes"),
         format!(
             "dev\x1f2\x1f1\x1fclaude\x1f999999999\x1f{}\x1e\n",
-            cwd.display()
+            cwd.to_str().unwrap().replace('\t', "\\\t")
         ),
     )
     .unwrap();
@@ -781,6 +790,7 @@ fn issue51_fifty_sessions_twenty_panes_scan_fast() {
 
 #[test]
 fn issue46_private_tmux_literal_launch_and_issue58_closed_terminal_exit() {
+    let _guard = process_fixture_guard();
     let out = Command::new("python3")
         .arg("tests/tmux.py")
         .arg(env!("CARGO_BIN_EXE_sboard"))
@@ -872,4 +882,105 @@ fn issue47_cli_resume_preserves_exact_argv_and_metacharacter_cwd() {
             cwd.canonicalize().unwrap().to_str().unwrap()
         );
     }
+}
+
+#[test]
+fn issue78_rollback_keeps_branch_created_after_existence_check() {
+    let s = Sandbox::new();
+    s.repo();
+    let real_git = session_board::launch::executable("git").unwrap();
+    script(
+        &s.path("bin/git"),
+        r#"
+if [ "$1" = show-ref ] && [ "$4" = refs/heads/raced ] && [ ! -e "$RACE_MARK" ]; then
+    "$REAL_GIT" "$@" >/dev/null 2>&1
+    result=$?
+    if [ "$result" != 0 ]; then
+        "$REAL_GIT" branch raced HEAD || exit 90
+        : > "$RACE_MARK"
+        exit 1
+    fi
+fi
+if [ "$1" = worktree ] && [ "$2" = add ]; then
+    echo add-denied >&2
+    exit 1
+fi
+exec "$REAL_GIT" "$@"
+"#,
+    );
+    failure(
+        s.cmd()
+            .arg("new")
+            .arg(s.path("project"))
+            .args(["--worktree", "raced"])
+            .env("REAL_GIT", &real_git)
+            .env("RACE_MARK", s.path("raced"))
+            .output()
+            .unwrap(),
+        "add-denied",
+    );
+    assert!(
+        s.path("raced").exists(),
+        "concurrent branch was never created"
+    );
+    assert!(
+        Command::new(real_git)
+            .current_dir(s.path("project"))
+            .args(["show-ref", "--verify", "--quiet", "refs/heads/raced"])
+            .status()
+            .unwrap()
+            .success(),
+        "rollback deleted the concurrent branch"
+    );
+}
+
+#[test]
+fn issue79_private_tmux_cwd_cannot_forge_pane_records() {
+    let _guard = process_fixture_guard();
+    let out = Command::new("python3")
+        .arg("tests/tmux.py")
+        .arg(env!("CARGO_BIN_EXE_sboard"))
+        .arg("injection")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn issue80_private_tmux_literal_hash_session_jumps() {
+    let _guard = process_fixture_guard();
+    let out = Command::new("python3")
+        .arg("tests/tmux.py")
+        .arg(env!("CARGO_BIN_EXE_sboard"))
+        .arg("hash-jump")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn issue81_private_tmux_session_removed_after_display_resumes() {
+    let _guard = process_fixture_guard();
+    let out = Command::new("python3")
+        .arg("tests/tmux.py")
+        .arg(env!("CARGO_BIN_EXE_sboard"))
+        .arg("jump-race")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

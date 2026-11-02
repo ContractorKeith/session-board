@@ -28,6 +28,7 @@ def screen(data):
     for chunk in chunks:
         if chunk.startswith('\x1b['):
             match = re.fullmatch(r'\x1b\[([?0-9;]*)([A-Za-z])', chunk)
+            if match is None: continue  # The next PTY read may complete this escape.
             params, op = match.groups()
             values = [int(x or 1) for x in params.split(';')] if '?' not in params else []
             if op in ('H', 'f'):
@@ -69,25 +70,29 @@ def case(mode):
         if mode in ('termios', 'cli-termios'):
             (bindir / 'claude').write_text('#!/bin/sh\nstty -a >> "$TERMINAL_FLAGS"\necho END >> "$TERMINAL_FLAGS"\nstty raw -echo\n')
         if mode in ('child-int', 'cli-int', 'cli-open-int'):
-            (bindir / 'claude').write_text('#!/bin/sh\ntrap "echo trapped > \"$INT_FILE\"" INT\necho ready > "$READY_FILE"\n(trap "" INT; sleep 3)\necho finished > "$FINISHED_FILE"\n')
-        if mode in ('stale-pane', 'socket-mismatch', 'vanished-pane'):
+            (bindir / 'claude').write_text('#!/bin/sh\ntrap "echo trapped > \"$INT_FILE\"" INT\n(trap "" INT; echo ready > "$READY_FILE"; sleep 3)\necho finished > "$FINISHED_FILE"\n')
+        if mode in ('stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure'):
             (bindir / 'tmux').write_text('#!/bin/sh\nif [ "$1" = -S ] || [ "$1" = -L ]; then shift 2; fi\nif [ "$1" = list-panes ]; then [ -f "$PANES" ] && cat "$PANES"; elif [ "$1" = display ]; then echo %0; else exit 0; fi\n')
             env['PANES'] = str(root / 'panes')
-        if mode in ('stale-pane', 'vanished-pane'):
+        if mode in ('stale-pane', 'vanished-pane', 'jump-failure', 'attach-failure'):
             (root / 'panes').write_text('dev\x1f2\x1f1\x1fclaude\x1f999999999\x1f' + str(root) + '\x1e\n')
         if mode == 'socket-mismatch':
             (root / 'config').mkdir()
             (root / 'config/config.toml').write_text('[tmux]\nsocket = "other"\n')
         if mode == 'vanished-pane':
             (bindir / 'tmux').write_text('#!/bin/sh\nif [ "$1" = -S ] || [ "$1" = -L ]; then shift 2; fi\nif [ "$1" = list-panes ]; then cat "$PANES"; elif [ "$1" = display ]; then [ "$3" = -t ] && exit 1; echo %0; else exit 0; fi\n')
+        if mode == 'jump-failure':
+            (bindir / 'tmux').write_text('#!/bin/sh\nif [ "$1" = -S ] || [ "$1" = -L ]; then shift 2; fi\nif [ "$1" = list-panes ]; then cat "$PANES"; elif [ "$1" = display ]; then echo %0; elif [ "$1" = switch-client ]; then echo pane-gone >&2; exit 1; else exit 0; fi\n')
+        if mode == 'attach-failure':
+            (bindir / 'tmux').write_text('#!/bin/sh\nif [ "$1" = -S ] || [ "$1" = -L ]; then shift 2; fi\nif [ "$1" = list-panes ]; then cat "$PANES"; elif [ "$1" = display ]; then echo %0; elif [ "$1" = attach ]; then echo attach-denied >&2; exit 1; else exit 0; fi\n')
         env['READY_FILE'] = str(root / 'ready')
         env['FINISHED_FILE'] = str(root / 'finished')
         env['INT_FILE'] = str(root / 'int')
         env['PATH'] = str(bindir) + os.pathsep + env['PATH']
         env['TERMINAL_FLAGS'] = str(root / 'flags')
         env.pop('TMUX', None)
-        if mode in ('socket-mismatch', 'vanished-pane'): env['TMUX'] = '/fake/live,1,0'
-        if mode in ('resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane'):
+        if mode in ('socket-mismatch', 'vanished-pane', 'jump-failure'): env['TMUX'] = '/fake/live,1,0'
+        if mode in ('resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure'):
             for row in rows:
                 if 'cwd' in row: row['cwd'] = str(root)
             (root / 'claude/projects/project/session.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
@@ -179,13 +184,15 @@ def case(mode):
                 os.write(master, b'c')
                 wait_for(lambda: 'using TMUX socket' in screen(output), 'socket mismatch not reported')
                 os.write(master, b'q')
-            elif mode in ('stale-pane', 'vanished-pane'):
+            elif mode in ('stale-pane', 'vanished-pane', 'jump-failure', 'attach-failure'):
                 wait_for(lambda: '1 projects' in screen(output), 'initial scan did not arrive')
                 os.write(master, b'j')
                 wait_for(lambda: 'Pane: dev:2.1' in screen(output), 'initial pane not assigned')
                 if mode == 'stale-pane': (root / 'panes').unlink()
                 os.write(master, b'\r')
                 wait_for(lambda: (root / 'flags').exists() and 'resumed ' in screen(output) and output.count(b'\x1b[?1049h') >= 2, 'Enter did not suspend around stale-pane fallback')
+                if mode == 'jump-failure': assert 'pane-gone' in screen(output), 'tmux failure message was lost'
+                if mode == 'attach-failure': assert 'attach-denied' in screen(output), 'tmux attach message was lost'
                 os.write(master, b'q')
             elif mode in ('termios', 'child-int', 'message'):
                 wait_for(lambda: '1 projects' in screen(output), 'initial scan did not arrive')
@@ -264,5 +271,5 @@ def case(mode):
             os.close(master)
             os.close(slave)
 
-for mode in ([os.environ['SBOARD_PTY_CASE']] if 'SBOARD_PTY_CASE' in os.environ else ['TERM'] if PROBE is None else ['TERM', 'INT', 'HUP', 'q', 'scan-panic', 'error', 'hook', 'dumb', 'stdin', 'idle', 'color-empty', 'color-off', 'unwatched', 'resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'cli-termios']):
+for mode in ([os.environ['SBOARD_PTY_CASE']] if 'SBOARD_PTY_CASE' in os.environ else ['TERM'] if PROBE is None else ['TERM', 'INT', 'HUP', 'q', 'scan-panic', 'error', 'hook', 'dumb', 'stdin', 'idle', 'color-empty', 'color-off', 'unwatched', 'resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure', 'cli-termios']):
     case(mode)

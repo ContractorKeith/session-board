@@ -1,6 +1,10 @@
 """Real tmux checks use only unique private sockets, scratch stores and fake agents."""
 import json
+from datetime import datetime, timezone
 import os
+import pty
+import select
+import shlex
 from pathlib import Path
 import shutil
 import signal
@@ -38,7 +42,7 @@ def case(mode):
                    CLAUDE_CONFIG_DIR=str(root / 'claude'), CODEX_HOME=str(root / 'codex'),
                    SBOARD_CONFIG_DIR=str(root / 'config'), SBOARD_STATE_DIR=str(root / 'state'),
                    RECORD_CWD=str(root / 'cwd'), RECORD_ARGS=str(root / 'args'),
-                   RECORD_STORES=str(root / 'stores'))
+                   RECORD_STORES=str(root / 'stores'), RECORD_DONE=str(root / 'done'))
         env.pop('TMUX', None)
         config = root / 'tmux.conf'
         config.write_text('set -g default-shell /bin/sh\nset -g exit-empty off\n')
@@ -51,6 +55,8 @@ def case(mode):
             return subprocess.run([BINARY] + list(args), cwd=root, env=env,
                                   capture_output=True, timeout=5)
         pid = None
+        client = None
+        master = None
         try:
             run_tmux('new-session', '-d', '-s', 'test', '-c', str(root), 'sleep', '60')
             tmux_env = run_tmux('display', '-p', '#{socket_path},#{pid},0').stdout.decode().strip()
@@ -67,13 +73,13 @@ def case(mode):
                 run_tmux('set-environment', '-g', 'PATH', str(root / 'rogue') + ':/usr/bin:/bin')
                 (root / 'config/config.toml').write_text('[tmux]\nsocket = "different-server"\n')
                 agent = bindir / 'claude'
-                agent.write_text('#!/bin/sh\npwd -P > "$RECORD_CWD"\nprintf "%s\\n" "$@" > "$RECORD_ARGS"\nprintf "%s\\n" "$CLAUDE_CONFIG_DIR" "$CODEX_HOME" > "$RECORD_STORES"\n')
+                agent.write_text('#!/bin/sh\npwd -P > "$RECORD_CWD"\nprintf "%s\\n" "$@" > "$RECORD_ARGS"\nprintf "%s\\n" "$CLAUDE_CONFIG_DIR" "$CODEX_HOME" > "$RECORD_STORES"\n: > "$RECORD_DONE"\n')
                 agent.chmod(0o755)
                 project = root / 'evil#(touch PWNED)'
                 project.mkdir()
                 result = board('new', str(project))
                 assert result.returncode == 0, result.stderr
-                wait_for(lambda: (root / 'stores').exists(), 'fake agent not launched')
+                wait_for(lambda: (root / 'done').exists(), 'fake agent not launched')
                 assert (root / 'cwd').read_text().removesuffix('\n') == str(project), 'format-expanded cwd'
                 assert (root / 'args').read_text() == '--\n', 'tmux did not receive split command argv'
                 assert (root / 'stores').read_text().splitlines() == [env['CLAUDE_CONFIG_DIR'], env['CODEX_HOME']]
@@ -82,15 +88,90 @@ def case(mode):
                 for args in (['init', '-q'], ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'initial']):
                     subprocess.run(['git'] + args, cwd=project, capture_output=True, check=True)
                 (root / 'stores').unlink()
+                (root / 'done').unlink()
                 result = board('new', str(project), '--worktree', 'x#S')
                 assert result.returncode == 0, result.stderr
-                wait_for(lambda: (root / 'stores').exists(), 'worktree agent not launched')
+                wait_for(lambda: (root / 'done').exists(), 'worktree agent not launched')
                 assert (root / 'cwd').read_text().removesuffix('\n') == str(root / 'evil#(touch PWNED)-wt/x#S')
                 assert not (root / 'PWNED').exists()
                 assert not (root / 'WRONG').exists()
+            elif mode in ('hash-jump', 'jump-race'):
+                victim = root / 'victim'
+                victim.mkdir()
+                target = 'a#b' if mode == 'hash-jump' else 'race'
+                run_tmux('new-session', '-d', '-s', target.replace('#', '##'), '-c', str(victim), 'sleep', '60')
+                capture = run_tmux('list-panes', '-t', '=' + target, '-F',
+                    '#{q:session_name}\x1f#{window_index}\x1f#{pane_index}\x1fclaude\x1f999999999\x1f#{q:pane_current_path}\x1e').stdout
+                (root / 'panes').write_bytes(capture)
+                rows = [json.loads(line) for line in Path('fixtures/claude_code/project/done.jsonl').read_text().splitlines()]
+                for row in rows:
+                    if 'cwd' in row: row['cwd'] = str(victim)
+                    if 'timestamp' in row: row['timestamp'] = datetime.now(timezone.utc).isoformat()
+                (root / 'claude/projects/project').mkdir()
+                (root / 'claude/projects/project/session.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
+                agent = bindir / 'claude'
+                agent.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$RECORD_ARGS"\n')
+                agent.chmod(0o755)
+                shim = bindir / 'tmux'
+                shim.write_text("""#!/bin/sh
+socket="$2"
+shift 2
+if [ "$1" = list-panes ]; then cat "$PANES"; exit; fi
+if [ "$1" = display ] && [ "$3" = -t ] && [ "$RACE" = 1 ] && [ ! -e "$RACE_MARK" ]; then
+    "$REAL_TMUX" -S "$socket" "$@"
+    result=$?
+    "$REAL_TMUX" -S "$socket" kill-session -t "=$TARGET"
+    : > "$RACE_MARK"
+    exit "$result"
+fi
+exec "$REAL_TMUX" -S "$socket" "$@"
+""")
+                shim.chmod(0o755)
+                for key, value in dict(REAL_TMUX=TMUX, PANES=str(root / 'panes'), TARGET=target,
+                                       RACE='1' if mode == 'jump-race' else '0', RACE_MARK=str(root / 'raced')).items():
+                    run_tmux('set-environment', '-g', key, value)
+                client, master = pty.fork()
+                if client == 0:
+                    os.execvpe(TMUX, tmux + ['attach', '-t', '=test'], env)
+                def connected():
+                    while select.select([master], [], [], 0)[0]:
+                        os.read(master, 65536)
+                    return bool(run_tmux('list-clients', '-F', '#{client_session}').stdout.strip())
+                wait_for(connected, 'private client did not attach')
+                wrapper = root / 'open'
+                wrapper.write_text('#!/bin/sh\n' + shlex.join([BINARY, 'open', 'claude_code:done']) +
+                    '\nresult=$?\nprintf "%s\\n" "$result" > ' + shlex.quote(str(root / 'exit.tmp')) + '\nmv ' + shlex.quote(str(root / 'exit.tmp')) + ' ' + shlex.quote(str(root / 'exit')) + '\nsleep 60\n')
+                wrapper.chmod(0o755)
+                run_tmux('new-window', '-t', '=test', '-c', str(root), str(wrapper))
+                wait_for(lambda: (root / 'exit').exists(), 'open did not return')
+                assert (root / 'exit').read_text().strip() == '0'
+                if mode == 'hash-jump':
+                    assert run_tmux('list-clients', '-F', '#{client_session}').stdout.strip() == b'a#b'
+                    assert not (root / 'args').exists(), 'literal hash target resumed instead of jumping'
+                else:
+                    assert (root / 'raced').exists(), 'shim never removed the target'
+                    assert (root / 'args').read_text() == '--resume=done\n', 'jump failure did not resume'
+            elif mode == 'injection':
+                env['TMUX'] = tmux_env
+                victim = root / 'victim'
+                victim.mkdir()
+                evil = root / ('inject\x1e\nbase\x1f1\x1f1\x1fclaude\x1f999999999\x1f' + str(victim))
+                evil.mkdir(parents=True)
+                run_tmux('new-window', '-c', str(evil), 'sleep', '30')
+                rows = [json.loads(line) for line in Path('fixtures/claude_code/project/done.jsonl').read_text().splitlines()]
+                for row in rows:
+                    if 'cwd' in row: row['cwd'] = str(victim)
+                    if 'timestamp' in row: row['timestamp'] = datetime.now(timezone.utc).isoformat()
+                (root / 'claude/projects/project').mkdir()
+                (root / 'claude/projects/project/session.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
+                result = board('list', '--all', '--json')
+                assert result.returncode == 0, result.stderr
+                sessions = [session for project in json.loads(result.stdout) for session in project['sessions']]
+                assert len(sessions) == 1
+                assert sessions[0]['pane'] is None, 'cwd forged a pane: ' + repr(sessions[0]['pane'])
             else:
                 wrapper = root / 'board'
-                wrapper.write_text('#!/bin/sh\necho $$ > "' + str(root / 'pid') + '"\nexec "' + BINARY + '"\n')
+                wrapper.write_text('#!/bin/sh\necho $$ > ' + shlex.quote(str(root / 'pid.tmp')) + '\nmv ' + shlex.quote(str(root / 'pid.tmp')) + ' ' + shlex.quote(str(root / 'pid')) + '\nexec ' + shlex.quote(BINARY) + '\n')
                 wrapper.chmod(0o755)
                 run_tmux('new-window', '-c', str(root), str(wrapper))
                 wait_for(lambda: (root / 'pid').exists(), 'board did not launch')
@@ -105,6 +186,11 @@ def case(mode):
             print(mode + ': private tmux regression passed')
         finally:
             subprocess.run(tmux + ['kill-server'], capture_output=True, env=env)
+            if client is not None:
+                try: os.kill(client, signal.SIGTERM)
+                except ProcessLookupError: pass
+                os.waitpid(client, 0)
+                os.close(master)
             if pid is not None:
                 status = subprocess.run(['ps', '-p', str(pid), '-o', 'comm='], capture_output=True).stdout.decode()
                 if 'sboard' in status:

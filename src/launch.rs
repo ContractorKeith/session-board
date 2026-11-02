@@ -192,6 +192,7 @@ pub fn resume_command(session: &Session) -> io::Result<Command> {
     Ok(command)
 }
 pub fn open(session: &Session, socket: &str) -> io::Result<String> {
+    let mut jump_error = None;
     if let Some(target) = &session.pane {
         match tmux::jump(socket, target) {
             Ok(()) => {
@@ -200,12 +201,14 @@ pub fn open(session: &Session, socket: &str) -> io::Result<String> {
                     &tmux::connect(socket),
                 ));
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
+            Err(e) => jump_error = Some(e),
         }
     }
     run(&mut resume_command(session)?)?;
-    Ok(format!("resumed {}", session.id))
+    Ok(match jump_error {
+        Some(error) => format!("{error}; resumed {}", session.id),
+        None => format!("resumed {}", session.id),
+    })
 }
 fn with_notice(message: String, connection: &tmux::Connection) -> String {
     match &connection.notice {
@@ -267,6 +270,20 @@ fn main_worktree(root: &Path) -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::other("cannot find main worktree"))?;
     use std::os::unix::ffi::OsStringExt;
     Ok(std::ffi::OsString::from_vec(path.to_vec()).into())
+}
+fn git_error(result: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    let details = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("Preparing worktree"))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    if details.is_empty() {
+        "git failed".into()
+    } else {
+        details
+    }
 }
 pub fn worktree(project: &Path, branch: &str) -> io::Result<PathBuf> {
     directory(project)?;
@@ -359,28 +376,45 @@ pub fn worktree(project: &Path, branch: &str) -> io::Result<PathBuf> {
             _ => return Err(io::Error::other("branch exists on multiple remotes")),
         }
     }
+    // Successful branch creation, rather than the earlier lookup, establishes ownership.
+    let created_branch = if exists {
+        false
+    } else {
+        let mut create = git(&root);
+        create.arg("branch");
+        if remote.is_some() {
+            create.arg("--track");
+        }
+        let result = create
+            .arg(branch)
+            .arg(remote.as_deref().unwrap_or("HEAD"))
+            .stdin(Stdio::null())
+            .output()?;
+        if result.status.success() {
+            true
+        } else if output(git(&root).args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ]))?
+        .status
+        .success()
+        {
+            false
+        } else {
+            return Err(io::Error::other(format!(
+                "branch creation failed: {}",
+                git_error(&result)
+            )));
+        }
+    };
     let mut cmd = git(&root);
-    cmd.args(["worktree", "add"]);
-    if remote.is_some() {
-        cmd.arg("--track");
-    }
-    if !exists {
-        cmd.args(["-b", branch]);
-    }
-    cmd.arg(&path);
-    if let Some(remote) = remote {
-        cmd.arg(remote);
-    } else if exists {
-        cmd.arg(branch);
-    }
+    cmd.args(["worktree", "add"]).arg(&path).arg(branch);
     // Checkouts may take longer than metadata discovery.
     let result = cmd.stdin(Stdio::null()).output()?;
     if !result.status.success() {
-        let message = String::from_utf8_lossy(&result.stderr)
-            .lines()
-            .next()
-            .unwrap_or("git failed")
-            .to_owned();
+        let message = git_error(&result);
         // The path was absent before this attempt; preserve pre-existing branches.
         let _ = output(
             git(&root)
@@ -390,7 +424,7 @@ pub fn worktree(project: &Path, branch: &str) -> io::Result<PathBuf> {
         if path.exists() {
             let _ = std::fs::remove_dir_all(&path);
         }
-        if !exists {
+        if created_branch {
             let _ = output(git(&root).args(["branch", "-D", "--", branch]));
         }
         return Err(io::Error::other(format!("worktree add failed: {message}")));

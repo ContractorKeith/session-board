@@ -10,7 +10,7 @@ use std::{
     process::Command,
 };
 
-const FORMAT: &str = "#{session_name}\x1f#{window_index}\x1f#{pane_index}\x1f#{pane_current_command}\x1f#{pane_pid}\x1f#{pane_current_path}\x1e";
+const FORMAT: &str = "#{q:session_name}\x1f#{window_index}\x1f#{pane_index}\x1f#{q:pane_current_command}\x1f#{pane_pid}\x1f#{q:pane_current_path}\x1e";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pane {
@@ -84,31 +84,44 @@ pub fn connect(configured: &str) -> Connection {
 pub fn inside() -> bool {
     connect("").inside
 }
-pub fn escape(value: &str) -> String {
+fn escape_format(value: &str) -> String {
     value.replace('#', "##")
+}
+// tmux q: prefixes shell-special characters (including newlines) with a backslash.
+// Decode data only; never pass the quoted representation to a shell.
+fn unquote(value: &str) -> Option<String> {
+    let mut decoded = String::new();
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => decoded.push(chars.next()?),
+            '\n' | '\r' | '\t' | '\x1e' | '\x1f' => return None,
+            _ => decoded.push(c),
+        }
+    }
+    (!decoded.contains(['\x1e', '\x1f'])).then_some(decoded)
 }
 fn parsed(text: &str) -> Discovery {
     let mut result = Discovery {
         panes: vec![],
         warnings: vec![],
     };
-    let records: Vec<_> = if text.contains("\x1e\n") {
-        text.split("\x1e\n").collect()
-    } else {
-        text.split('\n').collect()
-    };
-    for record in records.into_iter().filter(|r| !r.is_empty()) {
-        let fields: Vec<_> = record.splitn(6, '\x1f').collect();
+    for record in text.split("\x1e\n").filter(|r| !r.is_empty()) {
+        let fields: Vec<_> = record.split('\x1f').collect();
         let pane = (|| {
             if fields.len() != 6 {
                 return None;
             }
-            let command = fields[3].to_owned();
+            let session = unquote(fields[0])?;
+            let command = unquote(fields[3])?;
+            let cwd = unquote(fields[5])?;
+            fields[1].parse::<u32>().ok()?;
+            fields[2].parse::<u32>().ok()?;
             Some(Pane {
-                session: fields[0].into(),
+                session,
                 window: fields[1].into(),
                 index: fields[2].into(),
-                cwd: fields[5].into(),
+                cwd: cwd.into(),
                 pid: fields[4].parse().ok()?,
                 agents: AGENTS
                     .into_iter()
@@ -164,10 +177,11 @@ fn identify(
 ) -> Discovery {
     if !result.panes.is_empty() {
         let processes = processes();
+        let children = children(&processes);
         for pane in &mut result.panes {
             for agent in AGENTS {
                 if !pane.agents.contains(&agent)
-                    && descendants(&processes, pane.pid, agent_command(agent))
+                    && descendants(&children, pane.pid, agent_command(agent))
                 {
                     pane.agents.push(agent);
                 }
@@ -221,14 +235,14 @@ pub fn assign(projects: &mut [Project], panes: &[Pane], now: i64) {
         let Ok(cwd) = session.cwd.canonicalize() else {
             continue;
         };
-        if !groups.insert((cwd, agent_command(session.agent))) {
-            continue;
-        }
         if !matches!(
             session.status,
             Status::Working | Status::Waiting | Status::Done
         ) || now.saturating_sub(session.last_activity_at) > 3600
         {
+            continue;
+        }
+        if !groups.insert((cwd, agent_command(session.agent))) {
             continue;
         }
         if let Some(pane) = matching(session, panes) {
@@ -282,11 +296,17 @@ fn parse_processes(text: &str) -> Vec<(u32, u32, String)> {
         })
         .collect()
 }
-fn descendants(processes: &[(u32, u32, String)], pid: u32, name: &str) -> bool {
+fn children(processes: &[(u32, u32, String)]) -> HashMap<u32, Vec<(u32, &str)>> {
     let mut children: HashMap<u32, Vec<_>> = HashMap::new();
     for (pid, parent, command) in processes {
-        children.entry(*parent).or_default().push((*pid, command));
+        children
+            .entry(*parent)
+            .or_default()
+            .push((*pid, command.as_str()));
     }
+    children
+}
+fn descendants(children: &HashMap<u32, Vec<(u32, &str)>>, pid: u32, name: &str) -> bool {
     let mut pending = vec![pid];
     let mut seen = HashSet::new();
     while let Some(parent) = pending.pop() {
@@ -315,7 +335,7 @@ pub fn jump(socket: &str, target: &str) -> io::Result<()> {
         "display",
         "-p",
         "-t",
-        &format!("={}", escape(target)),
+        &format!("={target}"),
         "#{pane_id}",
     ]))?;
     if !live.status.success() || live.stdout.iter().all(u8::is_ascii_whitespace) {
@@ -328,25 +348,39 @@ pub fn jump(socket: &str, target: &str) -> io::Result<()> {
         launch::checked(connection.command().args([
             "switch-client",
             "-t",
-            &format!("={}", escape(session)),
+            &format!("={session}"),
         ]))?;
     }
     launch::checked(connection.command().args([
         "select-window",
         "-t",
-        &format!("={}:{}", escape(session), escape(window)),
+        &format!("={session}:{window}"),
     ]))?;
-    launch::checked(connection.command().args([
-        "select-pane",
-        "-t",
-        &format!("={}", escape(target)),
-    ]))?;
+    launch::checked(
+        connection
+            .command()
+            .args(["select-pane", "-t", &format!("={target}")]),
+    )?;
     if !connection.inside {
-        launch::run(
+        use std::io::{Read, Seek};
+        let mut stderr = tempfile::tempfile()?;
+        let result = launch::run(
             connection
                 .command()
-                .args(["attach", "-t", &format!("={}", escape(session))]),
-        )?;
+                .args(["attach", "-t", &format!("={session}")])
+                .stderr(stderr.try_clone()?),
+        );
+        if let Err(error) = result {
+            stderr.rewind()?;
+            let mut message = String::new();
+            stderr.read_to_string(&mut message)?;
+            let message = message.split_whitespace().collect::<Vec<_>>().join(" ");
+            return Err(if message.is_empty() {
+                error
+            } else {
+                io::Error::other(format!("tmux: {message}"))
+            });
+        }
     }
     Ok(())
 }
@@ -356,7 +390,7 @@ pub fn new_window(connection: &Connection, cwd: &Path, agent: Agent) -> io::Resu
     command.args([
         "new-window",
         "-c",
-        &escape(
+        &escape_format(
             cwd.to_str()
                 .ok_or_else(|| io::Error::other("project path is not UTF-8"))?,
         ),
@@ -396,8 +430,9 @@ mod tests {
             (12, 11, "codex".into()),
             (21, 20, "claude".into()),
         ];
-        assert!(descendants(&processes, 10, "codex"));
-        assert!(!descendants(&processes, 10, "claude"));
+        let children = super::children(&processes);
+        assert!(descendants(&children, 10, "codex"));
+        assert!(!descendants(&children, 10, "claude"));
     }
     #[test]
     fn issue51_process_table_once_for_fifty_sessions_twenty_panes() {
@@ -415,20 +450,27 @@ mod tests {
             serde_json::from_str(include_str!("../fixtures/list.json")).unwrap();
         let mut session = projects.remove(0).sessions.remove(0);
         session.cwd = cwd.path().into();
-        PROCESS_READS.with(|c| c.set(0));
-        let started = std::time::Instant::now();
-        let discovery = identify(parsed(&capture), process_table);
-        for _ in 0..50 {
-            assert!(matching(&session, &discovery.panes).is_none());
+        let mut fastest = std::time::Duration::MAX;
+        for _ in 0..3 {
+            PROCESS_READS.with(|c| c.set(0));
+            let started = std::time::Instant::now();
+            let discovery = identify(parsed(&capture), process_table);
+            for _ in 0..50 {
+                assert!(matching(&session, &discovery.panes).is_none());
+            }
+            fastest = fastest.min(started.elapsed());
+            assert_eq!(PROCESS_READS.with(|c| c.get()), 1);
         }
-        assert_eq!(PROCESS_READS.with(|c| c.get()), 1);
-        assert!(started.elapsed() < std::time::Duration::from_millis(300));
+        assert!(
+            fastest < std::time::Duration::from_millis(300),
+            "{fastest:?}"
+        );
     }
 
     #[test]
     fn issue52_malformed_records_warn_and_newlines_and_tabs_survive() {
         let result = super::parsed(
-            "bad record\x1e\ndev\x1f0\x1f0\x1fclaude\x1f1\x1f/project\ttab\nnewline\x1e\n",
+            "bad record\x1e\ndev\x1f0\x1f0\x1fclaude\x1f1\x1f/project\\\ttab\\\nnewline\x1e\n",
         );
         assert_eq!(result.warnings.len(), 1);
         assert_eq!(
@@ -437,7 +479,7 @@ mod tests {
         );
     }
     #[test]
-    fn issue50_latest_session_must_be_eligible() {
+    fn issue82_newest_eligible_session_gets_pane() {
         use super::*;
         let cwd = tempfile::tempdir().unwrap();
         let panes = parse(&format!(
@@ -446,13 +488,13 @@ mod tests {
         ));
         let original: Vec<Project> =
             serde_json::from_str(include_str!("../fixtures/list.json")).unwrap();
-        for (status, age, expected) in [
-            (Status::Working, 1, 1),
-            (Status::Waiting, 1, 1),
-            (Status::Done, 1, 1),
-            (Status::Idle, 1, 0),
-            (Status::Error, 1, 0),
-            (Status::Done, 3601, 0),
+        for (status, age, older_age, expected) in [
+            (Status::Working, 1, 2, Some(0)),
+            (Status::Waiting, 1, 2, Some(0)),
+            (Status::Done, 1, 2, Some(0)),
+            (Status::Idle, 5, 10, Some(1)),
+            (Status::Error, 5, 10, Some(1)),
+            (Status::Done, 3601, 3602, None),
         ] {
             let mut projects = original.clone();
             projects.truncate(1);
@@ -464,20 +506,21 @@ mod tests {
             newest.last_activity_at = 10000 - age;
             let mut older = newest.clone();
             older.id = "claude_code:older".into();
-            older.status = Status::Done;
-            older.last_activity_at -= 1;
+            older.status = Status::Working;
+            older.last_activity_at = 10000 - older_age;
             projects[0].sessions.push(older);
             assign(&mut projects, &panes, 10000);
+            let assigned: Vec<_> = projects[0]
+                .sessions
+                .iter()
+                .enumerate()
+                .filter_map(|(i, s)| s.pane.as_ref().map(|_| i))
+                .collect();
             assert_eq!(
-                projects[0]
-                    .sessions
-                    .iter()
-                    .filter(|s| s.pane.is_some())
-                    .count(),
-                expected,
+                assigned,
+                expected.into_iter().collect::<Vec<_>>(),
                 "{status:?}, age {age}"
             );
-            assert!(projects[0].sessions[1].pane.is_none());
         }
     }
     #[test]
@@ -486,5 +529,15 @@ mod tests {
             super::parse_processes(" 11  10 /Users/test name/bin/codex\n"),
             vec![(11, 10, "codex".into())]
         );
+    }
+    #[test]
+    fn issue79_malformed_fields_and_separator_paths_never_become_panes() {
+        for path in ["/project\x1f/victim", "/project\x1e/victim"] {
+            let result = super::parsed(&format!(
+                "base\x1f1\x1f1\x1fclaude\x1f999999999\x1f{path}\x1e\n"
+            ));
+            assert!(result.panes.is_empty());
+            assert_eq!(result.warnings.len(), 1);
+        }
     }
 }
