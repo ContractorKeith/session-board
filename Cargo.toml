@@ -15,6 +15,7 @@ clap = { version = "4", features = ["derive"] }
 crossterm = "0.29"
 notify = "8"
 signal-hook = "0.3"
+libc = "0.2"
 ratatui = "0.30"
 rusqlite = { version = "0.38", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

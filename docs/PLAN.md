@@ -158,6 +158,15 @@ Status from the transcript tail, first match wins:
 4. Otherwise an ended assistant turn: **done** if under 60 minutes old, else **idle**.
 5. An explicit error record in the tail (API error, non-zero exit event): **error**.
 
+Claude local-command user records (`<command-name>`, `<command-message>`,
+`<local-command-stdout>` wrappers) never open a pending assistant turn. `/exit`
+clears turn/error evidence and makes the session **idle**. Only complete native
+envelopes count: trailing prose and tool_result records remain normal user activity,
+and stdout contents are opaque. Other local commands
+leave the previous turn and its activity clock unchanged. Command-only sessions
+are idle. Commands supply neither the title nor last user text; absent a usable
+session title or real prompt, use the native session id.
+
 Unread is state, not status: set when a session's `last_activity_at` advances while it is not
 the selected row, cleared when selected or marked. Attention = waiting, error, or done-and-unread.
 Without a read mark, a session is unread only when its activity is newer than `first_seen`, which is written on the first state save; before that, all sessions are read.
@@ -192,6 +201,18 @@ sboard open <session-id>       # jump or resume, same as Enter
 sboard new <project-path> [--agent <a>] [--worktree <branch>]
 sboard version
 ```
+
+Opening a session with a discovered live pane attempts only a tmux jump. A failed
+jump reports the tmux error and never resumes a second copy. Resume is available
+when no pane is known. `open` prints one outcome line (`jumped to <target>` or
+`resumed <id> in <dir>`); an `error: <reason>` line goes to stderr with exit 1.
+The TUI retains an open error in its status bar until the next key.
+
+During a terminal handoff the child owns a separate foreground process group.
+SIGHUP or terminal hangup forwards HUP to that group, allows 500 ms for cleanup,
+then kills remaining group members and bounds leader reaping to two seconds.
+sboard exits 129 without re-entering or restoring the terminal. Ctrl-C goes to
+the foreground child; normal child exit returns terminal ownership to sboard.
 
 TUI keys: `j k` move, `h l` fold, `Enter` open, `n` new, `w` new in worktree, `p` pin, `t` tag,
 `m` mark read, `a` archive toggle, `A` show archived, `s` cycle sort, `g` group by tag/project, `/` filter, `r` rescan,

@@ -43,7 +43,10 @@ sessions. Corruption in an omitted middle is not counted. Malformed title-index
 records increment skipped lines. The optional index must be a regular file, checked
 with symlink_metadata before open; FIFOs, symlinks and other nonregular paths produce
 a skipped-store count and a path-specific warning. Missing index is optional.
-Doctor scans all ages; list applies its window.
+Doctor scans all ages; list applies its window. Doctor groups skipped-session
+reasons with counts (excluded non-user provenance, missing metadata, invalid id or
+cwd, empty/malformed transcript, unreadable transcript or missing valid activity),
+and exposes the same groups as `skipped_session_reasons` in JSON.
 
 A head task_started survives the gap until a tail task event overrides it. Pending
 tasks or unanswered calls mean working below 1800 seconds, error at/after 1800.

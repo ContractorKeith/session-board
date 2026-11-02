@@ -1,0 +1,2 @@
+{"type": "user", "sessionId": "login", "cwd": "/home/user/project", "timestamp": "2026-11-01T11:00:00Z", "message": {"role": "user", "content": "<command-message>login</command-message><command-name>/login</command-name>"}}
+{"type": "user", "sessionId": "login", "cwd": "/home/user/project", "timestamp": "2026-11-01T11:00:00Z", "message": {"role": "user", "content": "<local-command-stdout>Login successful</local-command-stdout>"}}

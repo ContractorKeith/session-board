@@ -1,7 +1,7 @@
 //! One-line launch prompts; process execution stays in launch and tmux.
+use super::DefaultTerminal;
 use super::{Action, App, Row};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::DefaultTerminal;
 use session_board::{config::Config, launch, model::Agent, tmux};
 use std::{io, path::PathBuf};
 
@@ -150,6 +150,7 @@ impl Open {
                     ));
                     app.project_organization();
                     // Read marks can shrink the queue; keep the original open target.
+                    let known_pane = session.pane.clone();
                     session = app
                         .organize
                         .projects
@@ -160,6 +161,7 @@ impl Open {
                         })
                         .cloned()
                         .unwrap_or(session);
+                    session.pane = session.pane.or(known_pane);
                     if session.pane.is_none() {
                         // Validate before leaving the TUI.
                         launch::resume_command(&session)?;
@@ -171,10 +173,10 @@ impl Open {
                         };
                         terminal.draw(|f| app.render(f, 0))?;
                     }
-                    // A pane can vanish after discovery; fallback resume needs suspension too.
+                    // Jump failures remain errors even when the target vanished after discovery.
                     app.suspend(terminal, || launch::open(&session, &config.tmux.socket))
                 })();
-                let outcome = result.unwrap_or_else(|e| e.to_string());
+                let outcome = result.unwrap_or_else(|e| format!("error: {e}"));
                 app.message = if save_notice.is_empty() {
                     outcome
                 } else {

@@ -94,6 +94,7 @@ pub struct Store {
     pub duplicate_ids: usize,
     pub skipped_stores: usize,
     pub skipped_sessions: usize,
+    pub skipped_session_reasons: std::collections::BTreeMap<String, usize>,
     pub warnings: Vec<String>,
 }
 
@@ -135,6 +136,7 @@ pub fn stores(home: &Path) -> Vec<Store> {
             duplicate_ids: 0,
             skipped_stores: usize::from(!exists),
             skipped_sessions: 0,
+            skipped_session_reasons: Default::default(),
             warnings: vec![],
         }
     })
@@ -175,6 +177,7 @@ pub fn doctor(out: &mut impl Write, home: &Path, json: bool) -> io::Result<()> {
         store.skipped_lines = result.skipped_lines;
         store.skipped_stores = result.skipped_stores;
         store.skipped_sessions = result.skipped_sessions;
+        store.skipped_session_reasons = result.skipped_session_reasons;
         store.warnings = result.warnings;
         store.warnings.extend(result.status_reasons);
     }
@@ -201,6 +204,9 @@ pub fn doctor(out: &mut impl Write, home: &Path, json: bool) -> io::Result<()> {
                 store.skipped_sessions,
                 store.duplicate_ids
             )?;
+            for (reason, count) in store.skipped_session_reasons {
+                writeln!(out, "  skipped sessions — {reason}: {count}")?;
+            }
             for warning in store.warnings {
                 writeln!(out, "  {warning}")?;
             }
@@ -423,7 +429,8 @@ pub fn open(id: &str) -> io::Result<()> {
         .find(|s| s.id == id)
         .ok_or_else(|| io::Error::other(format!("session not found: {id}")))?;
     let (config, _) = crate::config::Config::load(&crate::config::Config::path()?)?;
-    crate::launch::open(session, &config.tmux.socket)?;
+    let outcome = crate::launch::open(session, &config.tmux.socket)?;
+    writeln!(io::stdout().lock(), "{}", crate::source::title(&outcome))?;
     Ok(())
 }
 pub fn new(project: &Path, agent: LaunchAgent, branch: Option<&str>) -> io::Result<()> {
