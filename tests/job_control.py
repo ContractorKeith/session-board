@@ -16,7 +16,7 @@ import termios
 import time
 
 
-def case(binary, tui):
+def case(binary, tui, background=False, hangup=False):
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         (root / 'bin').mkdir()
@@ -52,7 +52,9 @@ def case(binary, tui):
             nonlocal output
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
-                if select.select([master], [], [], .02)[0]:
+                if master is None:
+                    time.sleep(.02)
+                elif select.select([master], [], [], .02)[0]:
                     try:
                         output += os.read(master, 65536)
                     except OSError as error:
@@ -69,23 +71,49 @@ def case(binary, tui):
                        ', "w").write(str(os.getpid())); os.execv(' + repr(binary) +
                        ', ' + repr(args) + ')')
             os.write(master, (shlex.quote(sys.executable) + ' -c ' + shlex.quote(wrapper) + '\n').encode())
-            wait_for(lambda: (root / 'board').exists(), 'board pid')
+            wait_for(lambda: (root / 'board').exists() and
+                     (root / 'board').read_text().strip().isdigit(), 'board pid')
             board = int((root / 'board').read_text())
             if tui:
                 wait_for(lambda: b'1 projects' in output, 'board tree')
                 os.write(master, b'n')
                 wait_for(lambda: b'Agent:' in output, 'agent picker')
                 os.write(master, b'c')
-            wait_for(lambda: (root / 'ready').exists(), 'agent ready')
+            wait_for(lambda: (root / 'ready').exists() and
+                     (root / 'ready').read_text().strip().isdigit(), 'agent ready')
             child = int((root / 'ready').read_text())
             assert os.tcgetpgrp(master) == child
             output = b''
             os.write(master, b'\x1a')
             wait_for(lambda: b'JOB_READY>' in output, 'Ctrl-Z must return shell prompt')
             assert os.tcgetpgrp(master) == shell.pid
+            if background:
+                os.write(master, b'bg\n')
+                time.sleep(.2)
+                assert os.tcgetpgrp(master) == shell.pid, 'bg stole the shell foreground'
+            if hangup:
+                os.close(master)
+                master = None
+                wait_for(lambda: shell.poll() is not None, 'shell exits on terminal hangup')
+
+                def gone(pid):
+                    try:
+                        os.waitpid(pid, os.WNOHANG)
+                    except ChildProcessError:
+                        pass
+                    try:
+                        os.kill(pid, 0)
+                        return False
+                    except ProcessLookupError:
+                        return True
+
+                wait_for(lambda: gone(board) and gone(child), 'stopped job cleans up on hangup')
+                print(('TUI' if tui else 'CLI') + ': stopped background job cleaned up on hangup')
+                return
             output = b''
             os.write(master, b'fg\n')
             wait_for(lambda: os.tcgetpgrp(master) == child, 'fg must restore agent foreground')
+            output = b''
             os.write(master, b'\x03')
             if tui:
                 wait_for(lambda: b'\x1b[?1049h' in output, 'board returns after child exit')
@@ -101,10 +129,12 @@ def case(binary, tui):
             # macOS can wait for PTY output to drain before finishing session exit.
             wait_for(lambda: shell.poll() is not None, 'shell exits after exit command')
             assert shell.returncode == 0
-            print(('TUI' if tui else 'CLI') + ': Ctrl-Z returns shell; fg resumes agent; Ctrl-C returns normally')
+            print(('TUI' if tui else 'CLI') + (', bg' if background else '') +
+                  ': Ctrl-Z returns shell; fg resumes agent; Ctrl-C returns normally')
         finally:
             # Release terminal drain before waiting, including failed-probe cleanup.
-            os.close(master)
+            if master is not None:
+                os.close(master)
             os.close(slave)
             for pid in [child, board, shell.pid]:
                 if pid:
@@ -133,3 +163,7 @@ if __name__ == '__main__':
     binary = str(Path(sys.argv[1]).resolve())
     case(binary, False)
     case(binary, True)
+    case(binary, False, background=True)
+    case(binary, True, background=True)
+    case(binary, False, background=True, hangup=True)
+    case(binary, True, background=True, hangup=True)

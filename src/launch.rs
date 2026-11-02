@@ -248,12 +248,21 @@ pub fn run(command: &mut Command) -> io::Result<()> {
                 if tty {
                     foreground(libc::STDIN_FILENO, parent_group)?;
                 }
-                // SIGSTOP also works when sboard is the leader of an orphaned PTY group.
-                unsafe { libc::raise(libc::SIGSTOP) };
-                if tty {
-                    foreground(libc::STDIN_FILENO, group)?;
+                loop {
+                    // SIGSTOP also works for an orphaned PTY group. A background
+                    // resume must stop again instead of stealing the shell's terminal.
+                    unsafe { libc::raise(libc::SIGSTOP) };
+                    if hung_up.load(Ordering::SeqCst) || (tty && terminal_hung_up()) {
+                        break;
+                    }
+                    if !tty || unsafe { libc::tcgetpgrp(libc::STDIN_FILENO) } == parent_group {
+                        if tty {
+                            foreground(libc::STDIN_FILENO, group)?;
+                        }
+                        unsafe { libc::kill(-group, libc::SIGCONT) };
+                        break;
+                    }
                 }
-                unsafe { libc::kill(-group, libc::SIGCONT) };
                 continue;
             }
             if waited == group {
