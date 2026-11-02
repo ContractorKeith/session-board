@@ -74,8 +74,11 @@ Only an existing `-wal` selects normal `mode=ro` locking; **creating or updating
 `-journal` is forbidden.** With no WAL use `immutable=1`; an orphan SHM or stale
 zero-byte journal does not change that decision. A nonempty rollback journal
 without WAL is skipped with a warning to exclude uncommitted spilled pages.
-After an immutable scan, any change in database size/mtime or sidecar set/metadata
-discards all sessions and warns. Normal WAL scans see committed frames without
+After opening and before the first schema read, database and sidecar identities/set
+are checked again. A private VFS guard prevents CREATE on WAL/journal file opens,
+so a disappearing WAL cannot be recreated even in the later OS-open window.
+After an immutable scan, changes in device/inode, nanosecond mtime/ctime, header
+counter/version signals, or sidecar set/metadata discard all sessions and warn. Normal WAL scans see committed frames without
 a warning. Busy/locked stores are skipped. Schema drift fails soft; live
 verification is still required before claiming compatibility with an installed
 OpenCode version.
@@ -111,3 +114,8 @@ Round-3 shared-wrapper tests cover a spilling writer starting after the schema
 query and independent size/mtime/sidecar changes. Byte snapshots now capture SHM
 and explicitly allow its creation/modification only when a WAL exists. Relative
 `OPENCODE_DB=opencode.db` is tested through doctor and a live `Scans::start` probe.
+
+Round-4 shared-opener tests cover WAL removal before/inside the OS-open boundary,
+same-size restored-mtime updates, rename replacement and MEMORY-journal spills.
+Relative overrides still follow cwd if the process itself changes it; the app's
+child-process launches do not change its own cwd.

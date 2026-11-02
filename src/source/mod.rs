@@ -4,6 +4,7 @@ pub mod grok;
 pub mod opencode;
 mod read;
 mod sqlite;
+mod sqlite_vfs;
 use crate::{
     config::Config,
     model::{Agent, Session},

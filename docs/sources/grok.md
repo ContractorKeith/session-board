@@ -46,13 +46,23 @@ without WAL are conservatively skipped with a locked-store warning, rather than
 risk reading spilled uncommitted pages or performing recovery.
 
 Both sources use one scan wrapper. Before immutable access it records database
-size/mtime and the WAL/SHM/journal set and metadata. After the complete scan it
+size and nanosecond mtime/ctime, Unix device/inode identity, SQLite header change
+counter/version signals (bytes 24–27 and 92–99), and the WAL/SHM/journal set and
+metadata. After the complete scan it
 compares them again: any change or metadata error discards all sessions, counts
 one skipped store and warns with the path. There is no retry through a writer's
 lock. This catches a writer starting after the initial sidecar decision. Normal
 stable scans print no SQLite warning. Missing stores increment skipped stores
 silently. Busy/locked/corrupt/schema failures warn and discard partial sessions.
 Row conversion failures skip/count the row; SQLite step/I/O errors fail the store.
+
+After opening the connection and before the schema read, re-snapshot database
+and sidecar identities/set; a changed target closes/discards the connection with
+a warning. The private `sqlite_vfs` module also removes CREATE, EXCLUSIVE and
+DELETEONCLOSE from WAL/main-journal/super-journal xOpen flags before delegating to
+SQLite's platform VFS. The OS open therefore cannot recreate a WAL removed in
+the later window between that check and the actual WAL open. SQLite's platform
+locking and approved SHM protocol remain in use; no cleanup deletes agent files.
 
 Fixtures are committed **SQL**, generated in temp directories by
 `tests/sqlite_sources.rs`, clock 2026-11-01 12:00 UTC:
@@ -91,3 +101,16 @@ pre-opened spilling writer after the first schema query, confirms the candidate
 contains an uncommitted title, and proves the scan wrapper discards it. Separate
 checks change only database size, only mtime, or only the sidecar set. The watcher
 probe also verifies bare relative `OPENCODE_DB=opencode.db` refreshes automatically.
+
+Round-4 regressions remove WAL both before connection open and at the actual VFS
+file-open boundary, asserting no WAL/SHM/journal is left. Re-enabling CREATE makes
+the latter test fail. Snapshot tests reject same-size committed rewrites, rename
+replacement with matching size/mtime, and a spilling MEMORY-journal writer with
+restored mtime and an observed uncommitted candidate. Header tests independently
+verify that all requested counter/version ranges are read from the file.
+
+Remaining limits: relative overrides are resolved again from cwd on each registry
+rebuild; only an in-process chdir can change that result. SQLite may still
+materialize very large values internally: the attack's 100 MB content case peaked
+near 310 MB RSS despite bounded Rust previews. Neither is a one-line fix, and the
+100,000-row historical benchmark is not a bound for a single huge content value.

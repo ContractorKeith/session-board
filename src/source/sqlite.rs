@@ -1,35 +1,87 @@
-use super::SourceScan;
+use super::{SourceScan, sqlite_vfs};
 use rusqlite::{Connection, OpenFlags};
 use std::{
-    io,
+    io::{self, Read},
     path::{Path, PathBuf},
     time::SystemTime,
 };
 
 #[derive(PartialEq, Eq)]
+struct Stamp {
+    size: u64,
+    modified: SystemTime,
+    #[cfg(unix)]
+    identity: (u64, u64),
+    #[cfg(unix)]
+    changed: (i64, i64),
+}
+impl Stamp {
+    fn new(meta: std::fs::Metadata) -> io::Result<Self> {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Ok(Self {
+            size: meta.len(),
+            modified: meta.modified()?,
+            #[cfg(unix)]
+            identity: (meta.dev(), meta.ino()),
+            #[cfg(unix)]
+            changed: (meta.ctime(), meta.ctime_nsec()),
+        })
+    }
+    fn same_file(&self, other: &Self) -> bool {
+        #[cfg(unix)]
+        {
+            self.identity == other.identity
+        }
+        #[cfg(not(unix))]
+        {
+            self == other
+        }
+    }
+}
+#[derive(PartialEq, Eq)]
 struct Snapshot {
-    database: (u64, SystemTime),
-    // WAL, SHM, rollback journal. Metadata also detects a previously empty
-    // journal becoming active without changing the set of filenames.
-    sidecars: [Option<(u64, SystemTime)>; 3],
+    database: Stamp,
+    // Header change counter (24..28), version-valid-for and SQLite version (92..100).
+    header: [u8; 12],
+    // WAL, SHM, rollback journal; include identity/ctime as well as size/mtime.
+    sidecars: [Option<Stamp>; 3],
 }
 impl Snapshot {
     fn read(path: &Path) -> io::Result<Self> {
-        let stamp = |path: &Path| match std::fs::metadata(path) {
-            Ok(meta) => Ok(Some((meta.len(), meta.modified()?))),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error),
-        };
+        let mut file = std::fs::File::open(path)?;
+        let database = Stamp::new(file.metadata()?)?;
+        let mut header = [0; 100];
+        file.read_exact(&mut header)?;
+        let mut signals = [0; 12];
+        signals[..4].copy_from_slice(&header[24..28]);
+        signals[4..].copy_from_slice(&header[92..100]);
         let sidecar = |suffix: &str| {
             let mut name = path.as_os_str().to_os_string();
             name.push(suffix);
-            stamp(Path::new(&name))
+            match std::fs::metadata(Path::new(&name)) {
+                Ok(meta) => Stamp::new(meta).map(Some),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error),
+            }
         };
         Ok(Self {
-            database: stamp(path)?
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "database disappeared"))?,
+            database,
+            header: signals,
             sidecars: [sidecar("-wal")?, sidecar("-shm")?, sidecar("-journal")?],
         })
+    }
+    fn same_open_target(&self, other: &Self) -> bool {
+        self.database.same_file(&other.database)
+            && self
+                .sidecars
+                .iter()
+                .zip(&other.sidecars)
+                .all(|(before, after)| match (before, after) {
+                    (Some(before), Some(after)) => before.same_file(after),
+                    (None, None) => true,
+                    _ => false,
+                })
     }
 }
 struct Database {
@@ -40,6 +92,13 @@ struct Database {
 
 /// Existing WAL permits SQLite's SHM protocol; no WAL requires a checked immutable read.
 fn open(path: &Path, result: &mut SourceScan) -> Option<Database> {
+    open_with(path, result, || {})
+}
+fn open_with(
+    path: &Path,
+    result: &mut SourceScan,
+    before_connection: impl FnOnce(),
+) -> Option<Database> {
     if let Err(error) = crate::storage::regular_file(path) {
         result.skipped_stores += 1;
         if error.kind() != io::ErrorKind::NotFound {
@@ -76,7 +135,11 @@ fn open(path: &Path, result: &mut SourceScan) -> Option<Database> {
     let wal = before.sidecars[0].is_some();
     // Without WAL, a nonempty rollback journal can contain spilled uncommitted
     // pages. Skip it rather than risk recovery or reading through its lock.
-    if !wal && before.sidecars[2].is_some_and(|(size, _)| size > 0) {
+    if !wal
+        && before.sidecars[2]
+            .as_ref()
+            .is_some_and(|stamp| stamp.size > 0)
+    {
         failed(
             path,
             &"database may be locked: nonempty rollback journal",
@@ -89,23 +152,45 @@ fn open(path: &Path, result: &mut SourceScan) -> Option<Database> {
     } else {
         "mode=ro&immutable=1"
     };
-    let connection = (|| -> rusqlite::Result<Connection> {
-        let connection = Connection::open_with_flags(format!("{uri}?{query}"), flags)?;
-        connection.busy_timeout(std::time::Duration::from_millis(200))?;
-        connection.query_row("SELECT count(*) FROM sqlite_schema", [], |_| Ok(()))?;
-        Ok(connection)
-    })();
-    match connection {
-        Ok(connection) => Some(Database {
-            connection,
-            path: absolute,
-            immutable_snapshot: (!wal).then_some(before),
-        }),
+    before_connection();
+    let connection = match sqlite_vfs::open(&format!("{uri}?{query}"), flags) {
+        Ok(connection) => connection,
         Err(error) => {
             failed(path, &error, result);
-            None
+            return None;
+        }
+    };
+    // sqlite3_open_v2 normally defers WAL/SHM access until the schema probe.
+    // Revalidate before that first read; the VFS also guards the later OS open.
+    match Snapshot::read(&absolute) {
+        Ok(after) if before.same_open_target(&after) => (),
+        Ok(_) => {
+            drop(connection);
+            failed(
+                path,
+                &"SQLite store or sidecar set changed during open; discarded connection",
+                result,
+            );
+            return None;
+        }
+        Err(error) => {
+            drop(connection);
+            failed(path, &error, result);
+            return None;
         }
     }
+    let probe = connection
+        .busy_timeout(std::time::Duration::from_millis(200))
+        .and_then(|()| connection.query_row("SELECT count(*) FROM sqlite_schema", [], |_| Ok(())));
+    if let Err(error) = probe {
+        failed(path, &error, result);
+        return None;
+    }
+    Some(Database {
+        connection,
+        path: absolute,
+        immutable_snapshot: (!wal).then_some(before),
+    })
 }
 
 /// Keep validation around the complete scan so neither source can return a
@@ -315,6 +400,197 @@ mod tests {
             assert_eq!(result.skipped_stores, 1, "missed {change} change");
             assert_eq!(result.warnings.len(), 1);
             assert!(result.warnings[0].contains("changed during immutable scan"));
+        }
+    }
+    #[test]
+    fn issue99_wal_removed_between_decision_and_connection_is_not_recreated() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("store.db");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE TABLE test(id); PRAGMA journal_mode=WAL")
+            .unwrap();
+        let wal = temp.path().join("store.db-wal");
+        std::fs::write(&wal, []).unwrap();
+        let mut result = SourceScan::default();
+        let database = open_with(&path, &mut result, || {
+            std::fs::remove_file(&wal).unwrap();
+        });
+        assert!(!wal.exists(), "reader recreated the removed WAL");
+        assert!(
+            !temp.path().join("store.db-shm").exists(),
+            "discarded open created SHM"
+        );
+        assert!(database.is_none());
+        assert_eq!(result.skipped_stores, 1);
+        assert_eq!(result.warnings.len(), 1);
+        assert!(result.warnings[0].contains(path.to_str().unwrap()));
+    }
+
+    #[test]
+    fn issue100_committed_rewrite_and_replacement_with_restored_mtime_are_rejected() {
+        for replace in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("store.db");
+            let writer = Connection::open(&path).unwrap();
+            writer
+                .execute_batch("CREATE TABLE test(title TEXT); INSERT INTO test VALUES ('OLD')")
+                .unwrap();
+            let before = std::fs::metadata(&path).unwrap();
+            let mut result = SourceScan::default();
+            scan(&path, &mut result, |connection, _| {
+                let value: String =
+                    connection.query_row("SELECT title FROM test", [], |r| r.get(0))?;
+                assert_eq!(value, "OLD");
+                if replace {
+                    let replacement = temp.path().join("replacement.db");
+                    Connection::open(&replacement)
+                        .unwrap()
+                        .execute_batch(
+                            "CREATE TABLE test(title TEXT); INSERT INTO test VALUES ('NEW')",
+                        )
+                        .unwrap();
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(&replacement)
+                        .unwrap()
+                        .set_times(
+                            std::fs::FileTimes::new().set_modified(before.modified().unwrap()),
+                        )
+                        .unwrap();
+                    std::fs::rename(replacement, &path).unwrap();
+                } else {
+                    writer.execute("UPDATE test SET title='NEW'", [])?;
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(&path)
+                        .unwrap()
+                        .set_times(
+                            std::fs::FileTimes::new().set_modified(before.modified().unwrap()),
+                        )
+                        .unwrap();
+                }
+                let after = std::fs::metadata(&path).unwrap();
+                assert_eq!(after.len(), before.len());
+                assert_eq!(after.modified().unwrap(), before.modified().unwrap());
+                Ok(())
+            });
+            assert_eq!(
+                result.skipped_stores, 1,
+                "same-size/restored-mtime change escaped: replace={replace}"
+            );
+            assert_eq!(result.warnings.len(), 1);
+        }
+    }
+
+    #[test]
+    fn issue100_memory_journal_spill_with_restored_mtime_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("store.db");
+        let writer = Connection::open(&path).unwrap();
+        writer.execute_batch("PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA cache_size=2; CREATE TABLE test(title TEXT); BEGIN; WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<3000) INSERT INTO test SELECT printf('%-1024s', 'COMMITTED') FROM n; COMMIT;").unwrap();
+        let before = std::fs::metadata(&path).unwrap();
+        let mut result = SourceScan::default();
+        scan(&path, &mut result, |connection, result| {
+            writer.execute_batch(
+                "BEGIN IMMEDIATE; UPDATE test SET title=printf('%-1024s', 'UNCOMMITTED')",
+            )?;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(before.modified().unwrap()))
+                .unwrap();
+            let after = std::fs::metadata(&path).unwrap();
+            assert_eq!(after.len(), before.len());
+            assert_eq!(after.modified().unwrap(), before.modified().unwrap());
+            assert!(!temp.path().join("store.db-journal").exists());
+            let title: String = connection.query_row(
+                "SELECT title FROM test WHERE title LIKE 'UNCOMMITTED%' LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?;
+            assert!(title.starts_with("UNCOMMITTED"), "fixture did not spill");
+            result.sessions.push(crate::model::Session {
+                id: "grok:race".into(),
+                agent: crate::model::Agent::Grok,
+                cwd: temp.path().into(),
+                project_root: temp.path().into(),
+                title,
+                started_at: 1793534400,
+                last_activity_at: 1793534400,
+                status: crate::model::Status::Done,
+                last_user_text: String::new(),
+                last_assistant_text: String::new(),
+                transcript_path: path.clone(),
+                resume_hint: String::new(),
+                pane: None,
+            });
+            Ok(())
+        });
+        assert!(
+            result.sessions.is_empty(),
+            "uncommitted MEMORY-journal title escaped"
+        );
+        assert_eq!(result.skipped_stores, 1);
+        assert_eq!(result.warnings.len(), 1);
+        writer.execute_batch("ROLLBACK").unwrap();
+    }
+    #[test]
+    fn issue99_wal_removed_at_actual_vfs_open_cannot_be_created() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("store.db");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE TABLE test(id); PRAGMA journal_mode=WAL")
+            .unwrap();
+        let wal = temp.path().join("store.db-wal");
+        std::fs::write(&wal, []).unwrap();
+        let removed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observed = removed.clone();
+        let raced_wal = wal.clone();
+        sqlite_vfs::BEFORE_SIDECAR_OPEN.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                // Do not panic across the C ABI. Assert the removal afterwards.
+                observed.set(std::fs::remove_file(raced_wal).is_ok());
+            }));
+        });
+        let mut result = SourceScan::default();
+        let database = open(&path, &mut result);
+        sqlite_vfs::BEFORE_SIDECAR_OPEN.with(|hook| {
+            hook.borrow_mut().take();
+        });
+        assert!(removed.get(), "fixture never reached the actual WAL open");
+        assert!(database.is_none());
+        assert!(
+            !wal.exists(),
+            "VFS recreated a WAL after the post-open check"
+        );
+        assert!(!temp.path().join("store.db-shm").exists());
+        assert!(!temp.path().join("store.db-journal").exists());
+        assert_eq!(result.skipped_stores, 1);
+        assert_eq!(result.warnings.len(), 1);
+    }
+
+    #[test]
+    fn issue100_header_change_counters_are_read_from_the_file() {
+        use std::io::{Seek, SeekFrom, Write};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("store.db");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE TABLE test(id)")
+            .unwrap();
+        for offset in [24, 92, 96] {
+            let before = Snapshot::read(&path).unwrap();
+            let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            file.seek(SeekFrom::Start(offset)).unwrap();
+            file.write_all(&[0x7f, 0, 0, offset as u8]).unwrap();
+            let after = Snapshot::read(&path).unwrap();
+            assert_ne!(
+                before.header, after.header,
+                "missing header signal at {offset}"
+            );
         }
     }
 }
