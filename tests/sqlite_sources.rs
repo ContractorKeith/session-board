@@ -1,3 +1,5 @@
+#[allow(dead_code)]
+mod common;
 use rusqlite::Connection;
 use session_board::{
     config::Config,
@@ -36,6 +38,7 @@ fn no_sidecars(path: &Path) {
 }
 fn command(home: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_sboard"));
+    common::no_tmux(&mut command, home);
     command
         .env("HOME", home)
         .env("SBOARD_STATE_DIR", home.join("state"))
@@ -203,6 +206,7 @@ fn doctor_and_agent_filters_on_isolated_home() {
         .unwrap();
     assert!(output.status.success());
     let stores: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let stores = &stores["stores"];
     assert_eq!(stores[2]["agent"], "grok");
     assert_eq!(stores[2]["exists"], true);
     assert_eq!(stores[2]["sessions"], 2);

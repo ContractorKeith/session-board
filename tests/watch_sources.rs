@@ -1,10 +1,14 @@
+#[allow(dead_code)]
+mod common;
 #[path = "../src/watch.rs"]
 mod watch;
 use std::{fs, path::Path, process::Command, time::Duration};
 
 fn probe(mode: &str) {
     let temp = tempfile::tempdir().unwrap();
-    let output = Command::new(std::env::current_exe().unwrap())
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    common::no_tmux(&mut command, temp.path());
+    let output = command
         .args(["--ignored", "--exact", "watch_round2_probe"])
         .current_dir(temp.path())
         .env("SBOARD_WATCH_CASE", mode)

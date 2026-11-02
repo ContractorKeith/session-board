@@ -1,3 +1,5 @@
+#[allow(dead_code)]
+mod common;
 use rusqlite::Connection;
 use session_board::{
     config::Config,
@@ -37,6 +39,7 @@ fn names(path: &Path) -> Vec<std::ffi::OsString> {
 }
 fn command(home: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_sboard"));
+    common::no_tmux(&mut command, home);
     command
         .env("HOME", home)
         .env("SBOARD_STATE_DIR", home.join("state"))
@@ -237,6 +240,7 @@ fn issue65_overrides_match_doctor_and_registry() {
         let output = cmd.args(["doctor", "--json"]).output().unwrap();
         assert!(output.status.success());
         let stores: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let stores = &stores["stores"];
         assert_eq!(stores[2]["sessions"], 2);
         assert_eq!(stores[3]["sessions"], 6);
         assert_eq!(

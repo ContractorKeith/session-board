@@ -1,3 +1,5 @@
+#[allow(dead_code)]
+mod common;
 use rusqlite::Connection;
 use session_board::{
     config::Config,
@@ -145,6 +147,7 @@ fn issue85_relative_database_override_resolves_before_doctor() {
         .execute_batch(include_str!("../fixtures/opencode/opencode.sql"))
         .unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_sboard"));
+    common::no_tmux(&mut command, temp.path());
     command
         .current_dir(temp.path())
         .env("HOME", temp.path())
@@ -162,6 +165,7 @@ fn issue85_relative_database_override_resolves_before_doctor() {
     let output = command.args(["doctor", "--json"]).output().unwrap();
     assert!(output.status.success());
     let stores: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let stores = &stores["stores"];
     assert_eq!(
         stores[3]["path"],
         fs::canonicalize(&path).unwrap().to_str().unwrap()
