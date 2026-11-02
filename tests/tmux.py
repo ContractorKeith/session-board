@@ -154,7 +154,13 @@ exec "$REAL_TMUX" -S "$socket" "$@"
                 wait_for(lambda: (root / 'exit').exists(), 'open did not return')
                 assert (root / 'exit').read_text().strip() == '0'
                 if mode == 'hash-jump':
-                    assert run_tmux('list-clients', '-F', '#{client_session}').stdout.strip() == b'a#b'
+                    try:
+                        wait_for(lambda: run_tmux('list-clients', '-F', '#{client_session}').stdout.strip() == b'a#b',
+                                 'private client did not switch to the literal hash session')
+                    except AssertionError as error:
+                        clients = run_tmux('list-clients', '-F', '#{client_session}').stdout
+                        resumed = (root / 'args').read_bytes() if (root / 'args').exists() else None
+                        raise AssertionError(f'{error}; clients={clients!r}; resume argv={resumed!r}') from error
                     assert not (root / 'args').exists(), 'literal hash target resumed instead of jumping'
                 else:
                     assert (root / 'raced').exists(), 'shim never removed the target'
