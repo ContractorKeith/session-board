@@ -1,4 +1,5 @@
 """A stopped foreground agent must let the caller's shell stop/resume the board."""
+import errno
 import fcntl
 import json
 import os
@@ -52,7 +53,11 @@ def case(binary, tui):
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
                 if select.select([master], [], [], .02)[0]:
-                    output += os.read(master, 65536)
+                    try:
+                        output += os.read(master, 65536)
+                    except OSError as error:
+                        if error.errno != errno.EIO:
+                            raise
                 if predicate():
                     return
             raise AssertionError(f'{description}: {output[-1000:]!r}')
@@ -93,9 +98,14 @@ def case(binary, tui):
             except ProcessLookupError:
                 pass
             os.write(master, b'exit\n')
-            assert shell.wait(timeout=5) == 0
+            # macOS can wait for PTY output to drain before finishing session exit.
+            wait_for(lambda: shell.poll() is not None, 'shell exits after exit command')
+            assert shell.returncode == 0
             print(('TUI' if tui else 'CLI') + ': Ctrl-Z returns shell; fg resumes agent; Ctrl-C returns normally')
         finally:
+            # Release terminal drain before waiting, including failed-probe cleanup.
+            os.close(master)
+            os.close(slave)
             for pid in [child, board, shell.pid]:
                 if pid:
                     try:
@@ -114,8 +124,6 @@ def case(binary, tui):
                             break
                         assert time.monotonic() < deadline, 'probe process was not reaped'
                         time.sleep(.01)
-            os.close(master)
-            os.close(slave)
 
 
 if __name__ == '__main__':
