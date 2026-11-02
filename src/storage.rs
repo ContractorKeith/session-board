@@ -47,7 +47,7 @@ pub(crate) fn read_text(path: &Path) -> io::Result<String> {
 /// written through to its destination and the existing mode is kept (#13).
 pub(crate) fn write_toml(path: &Path, value: &impl Serialize) -> io::Result<()> {
     let text = toml::to_string_pretty(value).map_err(|e| at(path, e))?;
-    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+    let target = target(path)?;
     let parent = target
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -66,4 +66,31 @@ pub(crate) fn write_toml(path: &Path, value: &impl Serialize) -> io::Result<()> 
         .map_err(|error| at(&target, error.error))?;
     fs::File::open(parent)?.sync_all()?;
     Ok(())
+}
+
+/// Resolve even a dangling final symlink without replacing the link itself.
+pub(crate) fn target(path: &Path) -> io::Result<PathBuf> {
+    let mut path = path.to_owned();
+    for _ in 0..40 {
+        if let Ok(canonical) = fs::canonicalize(&path) {
+            return Ok(canonical);
+        }
+        match fs::read_link(&path) {
+            Ok(link) => {
+                path = if link.is_absolute() {
+                    link
+                } else {
+                    path.parent().unwrap_or(Path::new(".")).join(link)
+                }
+            }
+            Err(error)
+                if error.kind() == io::ErrorKind::InvalidInput
+                    || error.kind() == io::ErrorKind::NotFound =>
+            {
+                return Ok(path);
+            }
+            Err(error) => return Err(at(&path, error)),
+        }
+    }
+    Err(at(&path, "too many state symlinks"))
 }

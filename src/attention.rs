@@ -24,12 +24,9 @@ pub fn attention<'a>(projects: &'a [Project], state: &State) -> Vec<AttentionIte
                 .sessions
                 .iter()
                 .filter(|s| {
-                    rank(s) < 2
-                        || (s.status == Status::Done
-                            && state
-                                .read
-                                .get(&s.id)
-                                .is_none_or(|t| s.last_activity_at > *t))
+                    !project.archived
+                        && !state.session_archived(s)
+                        && (rank(s) < 2 || (s.status == Status::Done && state.unread(s)))
                 })
                 .map(move |session| AttentionItem { project, session })
         })

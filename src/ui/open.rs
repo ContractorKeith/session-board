@@ -17,7 +17,7 @@ enum Prompt {
     },
 }
 #[derive(Default)]
-pub(super) struct Open {
+pub struct Open {
     prompt: Option<Prompt>,
 }
 impl Open {
@@ -29,20 +29,43 @@ impl Open {
             }
         }
     }
-    pub fn key(
-        &mut self,
-        app: &mut App,
-        key: KeyEvent,
-        terminal: &mut DefaultTerminal,
-    ) -> io::Result<bool> {
-        let Some(prompt) = self.prompt.take() else {
-            return Ok(false);
-        };
-        if key.code == KeyCode::Esc
+    pub fn active(&self) -> bool {
+        self.prompt.is_some()
+    }
+    pub fn accepts_text(&self) -> bool {
+        matches!(self.prompt, Some(Prompt::Branch { .. }))
+    }
+    pub fn begin(&mut self, project: PathBuf, worktree: bool) {
+        self.prompt = Some(Prompt::Agent { project, worktree });
+    }
+    pub fn paste(&mut self, text: &str) {
+        if let Some(Prompt::Branch { branch, .. }) = &mut self.prompt {
+            for c in text.chars().filter(|c| !c.is_control()) {
+                if branch.len() + c.len_utf8() > 256 {
+                    break;
+                }
+                branch.push(c);
+            }
+        }
+    }
+    /// Prompts produce launch intent; action() retains M3's process/terminal handling.
+    pub fn key(&mut self, app: &mut App, key: KeyEvent) -> Option<Action> {
+        let prompt = self.prompt.take()?;
+        if (key.code == KeyCode::Esc
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT))
             || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
         {
             app.message = "launch cancelled".into();
-            return Ok(true);
+            return Some(Action::None);
+        }
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            self.prompt = Some(prompt);
+            return Some(Action::None);
         }
         self.prompt = match prompt {
             Prompt::Agent { project, worktree } => {
@@ -58,8 +81,11 @@ impl Open {
                         branch: String::new(),
                     }),
                     Some(agent) => {
-                        self.launch(app, terminal, project, agent, None)?;
-                        None
+                        return Some(Action::Launch {
+                            project,
+                            agent,
+                            branch: None,
+                        });
                     }
                     None => Some(Prompt::Agent { project, worktree }),
                 }
@@ -71,13 +97,18 @@ impl Open {
             } => {
                 match key.code {
                     KeyCode::Enter => {
-                        self.launch(app, terminal, project, agent, Some(&branch))?;
-                        return Ok(true);
+                        return Some(Action::Launch {
+                            project,
+                            agent,
+                            branch: Some(branch),
+                        });
                     }
                     KeyCode::Backspace => {
                         branch.pop();
                     }
-                    KeyCode::Char(c) if !c.is_control() && branch.len() < 256 => branch.push(c),
+                    KeyCode::Char(c) if !c.is_control() && branch.len() + c.len_utf8() <= 256 => {
+                        branch.push(c)
+                    }
                     _ => {}
                 }
                 Some(Prompt::Branch {
@@ -87,7 +118,7 @@ impl Open {
                 })
             }
         };
-        Ok(true)
+        Some(Action::None)
     }
     pub fn action(
         &mut self,
@@ -96,6 +127,13 @@ impl Open {
         terminal: &mut DefaultTerminal,
     ) -> io::Result<()> {
         match action {
+            Action::Launch {
+                project,
+                agent,
+                branch,
+            } => {
+                self.launch(app, terminal, project, agent, branch.as_deref())?;
+            }
             Action::Open => {
                 let Some(mut session) = app.session().cloned() else {
                     app.message = "select a session to open".into();
@@ -118,16 +156,19 @@ impl Open {
                 app.message = result.unwrap_or_else(|e| e.to_string());
             }
             Action::New | Action::Worktree => {
-                let root = match app.rows().get(app.selected) {
-                    Some(Row::Project(root)) => Some(root.clone()),
-                    Some(Row::Session(_)) => app.session().map(|s| s.project_root.clone()),
-                    _ => None,
-                };
+                let root = app.session().map(|s| s.project_root.clone()).or_else(|| {
+                    match app.rows().get(app.selected) {
+                        Some(Row::Project(root))
+                            if app.state.group == session_board::scan::Group::Project =>
+                        {
+                            Some(root.clone())
+                        }
+                        Some(Row::Session(_, _)) => app.session().map(|s| s.project_root.clone()),
+                        _ => None,
+                    }
+                });
                 if let Some(project) = root {
-                    self.prompt = Some(Prompt::Agent {
-                        project,
-                        worktree: action == Action::Worktree,
-                    });
+                    self.begin(project, action == Action::Worktree);
                 } else {
                     app.message = "select a project to launch".into();
                 }

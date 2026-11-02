@@ -9,7 +9,7 @@ use session_board::attention::AttentionItem;
 
 impl App {
     pub fn attention_items(&self) -> Vec<AttentionItem<'_>> {
-        session_board::attention::attention(&self.projects, &self.state)
+        session_board::attention::attention(&self.organize.projects, &self.state)
     }
     pub fn select_attention(&mut self, index: usize) {
         let items = self.attention_items();
@@ -54,7 +54,7 @@ impl App {
         let rows = self.rows();
         if let Some(index) = rows
             .iter()
-            .position(|r| matches!(r, Row::Session(p) if p == &path))
+            .position(|r| matches!(r, Row::Session(group, p) if group == &root && p == &path))
             .or_else(|| {
                 rows.iter()
                     .position(|r| matches!(r, Row::Project(p) if p == &root))
@@ -93,7 +93,9 @@ impl App {
                 self.sync_attention_tree(true);
                 return None;
             }
-            KeyCode::Char('m' | 'r' | 'n' | 'w') => return None,
+            KeyCode::Char('m' | 'r' | 'n' | 'w' | 'p' | 't' | 'a' | 'A' | 's' | 'g') => {
+                return None;
+            }
             _ => {}
         }
         Some(Action::None)

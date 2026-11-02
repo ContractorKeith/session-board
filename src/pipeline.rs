@@ -51,6 +51,7 @@ pub fn run(roots: &mut ProjectRoots, options: &Options) -> io::Result<Outcome> {
     let (mut config, mut warnings) = Config::load(&Config::path()?)?;
     let (mut state, state_warnings) = State::load(&State::path()?)?;
     warnings.extend(state_warnings);
+    warnings.extend(State::cleanup(&State::path()?));
     warnings.extend(normalize_settings(&mut config, &mut state, &home));
     let disabled = [
         (!config.agents.claude_code, "claude_code"),
@@ -96,7 +97,7 @@ pub fn run(roots: &mut ProjectRoots, options: &Options) -> io::Result<Outcome> {
     result.missing_projects = result
         .projects
         .iter()
-        .filter(|p| (p.pinned || !p.tags.is_empty()) && !p.root.is_dir())
+        .filter(|p| !p.root.is_dir())
         .map(|p| p.root.clone())
         .collect();
     cli::filter(
@@ -113,9 +114,9 @@ pub fn run(roots: &mut ProjectRoots, options: &Options) -> io::Result<Outcome> {
         if matches!(options.status, Some(StatusFilter::Attention)) {
             scan::Sort::Attention
         } else {
-            options.sort.unwrap_or(state.sort)
+            options.sort.unwrap_or_default()
         },
-        options.group.unwrap_or(state.group),
+        options.group.unwrap_or_default(),
     );
     warnings.append(&mut result.warnings);
     warnings.extend(roots.take_warnings());

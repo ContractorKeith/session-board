@@ -51,14 +51,7 @@ pub fn scan(
         result.warnings.extend(scanned.warnings);
         for mut session in scanned.sessions {
             session.project_root = resolve(&session.cwd);
-            if [
-                &session.cwd,
-                &session.project_root,
-                &session.transcript_path,
-            ]
-            .iter()
-            .any(|p| p.to_str().is_none())
-            {
+            if !valid_session_paths(&session) {
                 result.skipped_sessions += 1;
                 result
                     .warnings
@@ -138,6 +131,9 @@ pub enum Group {
 
 pub fn rank(session: &crate::model::Session, state: &State) -> u8 {
     use crate::model::Status;
+    if state.session_archived(session) {
+        return 4;
+    }
     match session.status {
         Status::Waiting => 0,
         Status::Error => 1,
@@ -149,25 +145,37 @@ pub fn rank(session: &crate::model::Session, state: &State) -> u8 {
 /// Tag groups retain each session's real project_root for organizing and launch.
 pub fn organize(projects: &mut Vec<Project>, state: &State, sort: Sort, group: Group) {
     if group == Group::Tag {
-        let mut groups: BTreeMap<String, Project> = BTreeMap::new();
+        let mut groups: BTreeMap<PathBuf, Project> = BTreeMap::new();
         for project in std::mem::take(projects) {
-            let tags = if project.tags.is_empty() {
-                vec!["untagged".into()]
+            let groups_for_project = if project.tags.is_empty() {
+                vec![(PathBuf::from("untagged:"), "untagged".to_owned(), vec![])]
             } else {
-                project.tags.clone()
+                project
+                    .tags
+                    .iter()
+                    .map(|tag| {
+                        (
+                            PathBuf::from(format!(
+                                "tag:{}",
+                                tag.replace('%', "%25").replace('/', "%2F")
+                            )),
+                            tag.clone(),
+                            vec![tag.clone()],
+                        )
+                    })
+                    .collect()
             };
-            for tag in tags {
-                let entry = groups.entry(tag.clone()).or_insert_with(|| Project {
-                    root: PathBuf::from(format!("tag:{tag}")),
-                    name: tag.clone(),
+            for (root, name, tags) in groups_for_project {
+                let entry = groups.entry(root.clone()).or_insert_with(|| Project {
+                    root,
+                    name,
                     sessions: vec![],
                     pinned: false,
-                    tags: vec![tag],
+                    tags,
                     archived: true,
                     unread_count: 0,
                 });
                 entry.sessions.extend(project.sessions.clone());
-                entry.pinned |= project.pinned;
                 entry.archived &= project.archived;
                 entry.unread_count += project.unread_count;
             }
@@ -176,16 +184,43 @@ pub fn organize(projects: &mut Vec<Project>, state: &State, sort: Sort, group: G
     }
     for project in projects.iter_mut() {
         project.sessions.sort_by(|a, b| {
-            (if sort == Sort::Attention {
-                rank(a, state).cmp(&rank(b, state))
+            (if group == Group::Tag {
+                state
+                    .pins
+                    .contains(&b.project_root)
+                    .cmp(&state.pins.contains(&a.project_root))
             } else {
                 std::cmp::Ordering::Equal
+            })
+            .then_with(|| {
+                if sort == Sort::Attention {
+                    rank(a, state).cmp(&rank(b, state))
+                } else {
+                    std::cmp::Ordering::Equal
+                }
             })
             .then_with(|| b.last_activity_at.cmp(&a.last_activity_at))
             .then_with(|| a.id.cmp(&b.id))
             .then_with(|| a.transcript_path.cmp(&b.transcript_path))
         });
     }
+    let attention_order: std::collections::HashMap<_, _> = if sort == Sort::Attention {
+        crate::attention::attention(projects, state)
+            .into_iter()
+            .enumerate()
+            .map(|(i, item)| {
+                (
+                    (
+                        item.session.id.clone(),
+                        item.session.transcript_path.clone(),
+                    ),
+                    i,
+                )
+            })
+            .collect()
+    } else {
+        Default::default()
+    };
     projects.sort_by(|a, b| {
         let activity = |p: &Project| {
             p.sessions
@@ -199,7 +234,19 @@ pub fn organize(projects: &mut Vec<Project>, state: &State, sort: Sort, group: G
             .cmp(&a.pinned)
             .then_with(|| {
                 if sort == Sort::Attention {
-                    priority(a).cmp(&priority(b))
+                    let best = |p: &Project| {
+                        p.sessions
+                            .iter()
+                            .filter_map(|s| {
+                                attention_order.get(&(s.id.clone(), s.transcript_path.clone()))
+                            })
+                            .min()
+                            .copied()
+                            .unwrap_or(usize::MAX)
+                    };
+                    priority(a)
+                        .cmp(&priority(b))
+                        .then_with(|| best(a).cmp(&best(b)))
                 } else {
                     std::cmp::Ordering::Equal
                 }
@@ -207,4 +254,14 @@ pub fn organize(projects: &mut Vec<Project>, state: &State, sort: Sort, group: G
             .then_with(|| activity(b).cmp(&activity(a)))
             .then_with(|| a.root.cmp(&b.root))
     });
+}
+
+pub fn valid_session_paths(session: &crate::model::Session) -> bool {
+    [
+        &session.cwd,
+        &session.project_root,
+        &session.transcript_path,
+    ]
+    .iter()
+    .all(|p| p.to_str().is_some())
 }

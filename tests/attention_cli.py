@@ -25,6 +25,8 @@ with tempfile.TemporaryDirectory() as scratch:
     (root / 'codex/sessions').mkdir(parents=True)
     env = dict(os.environ, CLAUDE_CONFIG_DIR=str(root / 'claude'), CODEX_HOME=str(root / 'codex'),
                SBOARD_STATE_DIR=str(root / 'state'), SBOARD_CONFIG_DIR=str(root / 'config'))
+    (root / 'state').mkdir()
+    (root / 'state/state.toml').write_text('first_seen = 0\n')
     command = [str(Path(sys.argv[1]).resolve()), 'list', '--status', 'attention']
     result = subprocess.run(command + ['--json'], env=env, capture_output=True, check=True)
     sessions = json.loads(result.stdout)
@@ -32,7 +34,6 @@ with tempfile.TemporaryDirectory() as scratch:
     result = subprocess.run(command, env=env, capture_output=True, text=True, check=True)
     groups = [Path(line.split(' (')[0]).name for line in result.stdout.splitlines() if line and not line.startswith(' ')]
     assert groups == ['beta', 'gamma', 'alpha'], groups
-    (root / 'state').mkdir()
-    (root / 'state/state.toml').write_text(f'read = {{ "claude_code:a-done" = {int(now.timestamp()) + 10} }}\n')
+    (root / 'state/state.toml').write_text(f'first_seen = 0\nread = {{ "claude_code:a-done" = {int(now.timestamp()) + 10} }}\n')
     result = subprocess.run(command + ['--json'], env=env, capture_output=True, check=True)
     assert [s['id'] for s in json.loads(result.stdout)] == ['claude_code:b-wait', 'claude_code:g-wait', 'claude_code:a-wait', 'claude_code:g-error', 'claude_code:b-error']

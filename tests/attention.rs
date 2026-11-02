@@ -256,10 +256,16 @@ fn global_attention_order_is_independent_of_project_grouping() {
     let p: Vec<session_board::model::Project> =
         serde_json::from_str(include_str!("fixtures/attention-projects.json")).unwrap();
     let expected = ["b-wait", "g-wait", "a-wait", "g-error", "b-error", "a-done"];
-    let actual: Vec<_> = attention(&p, &State::default())
-        .iter()
-        .map(|i| i.session.id.as_str())
-        .collect();
+    let actual: Vec<_> = attention(
+        &p,
+        &State {
+            first_seen: Some(0),
+            ..Default::default()
+        },
+    )
+    .iter()
+    .map(|i| i.session.id.as_str())
+    .collect();
     assert_eq!(actual, expected);
 }
 
@@ -673,4 +679,32 @@ fn known_error_activity_changes_are_not_gated_by_scan_time_or_age() {
     tracker.scan_at(&p, true, &mut record, NOW + 2);
     tracker.scan_at(&p, true, &mut record, NOW + 3);
     assert_eq!(record.calls.len(), 2);
+}
+
+#[test]
+fn attention_uses_first_seen_and_both_archive_forms() {
+    let p = projects(std::path::Path::new("fixtures/claude_code"));
+    let mut state = State::default();
+    assert!(
+        attention(&p, &state)
+            .iter()
+            .all(|i| i.session.status != session_board::model::Status::Done)
+    );
+    state.first_seen = Some(0);
+    assert!(
+        attention(&p, &state)
+            .iter()
+            .any(|i| i.session.status == session_board::model::Status::Done)
+    );
+    let selected = attention(&p, &state)[0].session.clone();
+    state.archived.push(selected.id.clone());
+    assert!(
+        attention(&p, &state)
+            .iter()
+            .all(|i| i.session.id != selected.id)
+    );
+    state
+        .archived
+        .push(selected.project_root.to_string_lossy().into_owned());
+    assert!(attention(&p, &state).is_empty());
 }

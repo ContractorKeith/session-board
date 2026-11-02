@@ -181,7 +181,13 @@ fn state_and_config_round_trip_atomic_replacement_and_corrupt_state() {
         pins: vec!["/project".into()],
         tags: BTreeMap::from([("/project".into(), vec!["client".into()])]),
         archived: vec!["/project".into(), "session-id".into()],
-        read: BTreeMap::from([("session-id".into(), 200)]),
+        read: BTreeMap::from([(
+            "session-id".into(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+        )]),
         first_seen: Some(0),
         ..Default::default()
     };

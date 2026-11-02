@@ -14,6 +14,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
+import threading
 from pty_probe import deadline, drain, read_ready
 
 
@@ -58,7 +60,7 @@ def case(mode):
         for row in rows:
             if 'timestamp' in row: row['timestamp'] = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat().replace('+00:00', 'Z')
         (root / 'claude/projects/project/session.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
-        env = dict(os.environ, TERM='xterm-256color',
+        env = dict(os.environ, TERM=os.environ.get('SBOARD_PTY_TERM', 'xterm-256color'),
                    CLAUDE_CONFIG_DIR=str(root / 'claude'), CODEX_HOME=str(root / 'codex'),
                    SBOARD_STATE_DIR=str(root / 'state'), SBOARD_CONFIG_DIR=str(root / 'config'))
         if mode == 'unwatched': (root / 'codex/sessions').rmdir()
@@ -86,6 +88,12 @@ def case(mode):
             (bindir / 'tmux').write_text('#!/bin/sh\nif [ "$1" = -S ] || [ "$1" = -L ]; then shift 2; fi\nif [ "$1" = list-panes ]; then cat "$PANES"; elif [ "$1" = display ]; then echo %0; elif [ "$1" = switch-client ]; then echo pane-gone >&2; exit 1; else exit 0; fi\n')
         if mode == 'attach-failure':
             (bindir / 'tmux').write_text('#!/bin/sh\nif [ "$1" = -S ] || [ "$1" = -L ]; then shift 2; fi\nif [ "$1" = list-panes ]; then cat "$PANES"; elif [ "$1" = display ]; then echo %0; elif [ "$1" = attach ]; then echo attach-denied >&2; exit 1; else exit 0; fi\n')
+        if mode in ('typeahead', 'paste-handoff'):
+            (bindir / 'claude').write_text('#!/bin/sh\necho ready > "$READY_FILE"\nIFS= read -r line\nprintf "%s" "$line" > "$AGENT_INPUT"\necho done > "$FINISHED_FILE"\n')
+            env['AGENT_INPUT'] = str(root / 'agent-input')
+            for row in rows:
+                if 'cwd' in row: row['cwd'] = str(root)
+            (root / 'claude/projects/project/session.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
         if mode == 'attention-resume':
             (bindir / 'claude').write_text('#!/bin/sh\nstty -a > "$TERMINAL_FLAGS"\nprintf "%s\\n" "$@" > "$ATTENTION_ARGS"\nprintf "agent returned\\n"\n')
             env['ATTENTION_ARGS'] = str(root / 'attention-args')
@@ -127,8 +135,30 @@ def case(mode):
             args = ['script', '-qefc', text, str(typescript)]
         master, slave = pty.openpty()
         fcntl.ioctl(slave, __import__('termios').TIOCSWINSZ, struct.pack('HHHH', 30, 100, 0, 0))
-        proc = subprocess.Popen(args, env=env, stdin=slave, stdout=slave, stderr=slave)
+        direct = mode.startswith('escape-') or mode in ('paste-timeout', 'paste-handoff', 'paste-nested', 'decoder-keys')
+        if direct:
+            # Timed bytes must reach the board's PTY without script(1)'s relay.
+            def controlling_terminal():
+                os.setsid()
+                fcntl.ioctl(slave, __import__('termios').TIOCSCTTY, 0)
+            proc = subprocess.Popen(command, env=env, stdin=slave, stdout=slave, stderr=slave,
+                                    preexec_fn=controlling_terminal)
+            pidfile.write_text(str(proc.pid))
+        else:
+            proc = subprocess.Popen(args, env=env, stdin=slave, stdout=slave, stderr=slave)
         output = b''
+        write_gaps = []
+        def write_parts(parts, gap):
+            previous = None
+            for part in parts:
+                if previous is not None:
+                    deadline = previous + gap
+                    # sleep on macOS may coalesce these sub-50 ms timing probes.
+                    while time.monotonic() < deadline: pass
+                sent = time.monotonic()
+                if previous is not None: write_gaps.append(round((sent - previous) * 1000, 2))
+                os.write(master, part)
+                previous = sent
         def pump():
             nonlocal output
             output += read_ready(master, .02)
@@ -142,7 +172,9 @@ def case(mode):
                     return
                 if proc.poll() is not None:
                     break
-            raise AssertionError(f'{mode}: {description}; return={proc.poll()}; output={output[-1200:]!r}')
+            # The process can exit between the predicate and poll above.
+            if predicate(): return
+            raise AssertionError(f'{mode}: {description}; return={proc.poll()}; write_gaps_ms={write_gaps}; output={output[-1200:]!r}')
         try:
             if mode in ('dumb', 'stdin'):
                 wait_for(lambda: proc.poll() is not None, 'refusal did not exit')
@@ -174,6 +206,160 @@ def case(mode):
                 assert b'\x1b[?1049l' not in output, 'worker panic restored the live terminal'
                 os.write(master, b'r')
                 wait_for(lambda: '1 projects' in screen(output), 'scan did not recover on r')
+                os.write(master, b'q')
+            elif mode == 'escape-sequence-prefix':
+                wait_for(lambda: '1 projects' in screen(output), 'initial scan did not arrive')
+                for tail in (b'\x1b[200~a\x1b[201~', b'\x1b[200~p\x1b[201~', b'\x1b[200~q\x1b[201~', b'\x1b[A', b'\x1bOA'):
+                    os.write(master, b't')
+                    wait_for(lambda: 'Tags:' in screen(output), 'tag prompt missing')
+                    write_parts([b'\x1b', tail], .02)
+                    wait_for(lambda: 'Tags:' not in screen(output), 'leading Escape did not cancel')
+                    until = time.monotonic() + .15
+                    while time.monotonic() < until: pump()
+                    assert proc.poll() is None, 'escape-prefixed paste quit the board'
+                    assert not (root / 'state/state.toml').exists(), 'escape-prefixed sequence ran a board action'
+                os.write(master, b'q')
+            elif mode == 'decoder-keys':
+                wait_for(lambda: '1 projects' in screen(output), 'initial scan did not arrive')
+                os.write(master, b'\x1b[[A\x1b[[B\x1b[[C\x1b[[D\x1b[[E\x1b[13u\x1b[99;5u\x1b[1;5B')
+                until = time.monotonic() + .15
+                while time.monotonic() < until: pump()
+                assert not (root / 'state/state.toml').exists(), 'ignored sequence ran a board action'
+                for parts in ([b'\x1b\x1b'], [b'\x1b[', b'\x03'], [b'\xf0', b'\x03']):
+                    os.write(master, b't')
+                    wait_for(lambda: 'Tags:' in screen(output), 'tag prompt missing')
+                    write_parts(parts, .02)
+                    wait_for(lambda: 'Tags:' not in screen(output), 'Escape/control failed to cancel prompt')
+                assert not (root / 'state/state.toml').exists(), 'cancelled prompt saved state'
+                os.write(master, b'q')
+            elif mode.startswith('escape-') or mode in ('paste-timeout', 'paste-nested'):
+                wait_for(lambda: '1 projects' in screen(output), 'initial scan did not arrive')
+                if mode != 'escape-alt-board':
+                    os.write(master, b't')
+                    wait_for(lambda: 'Tags:' in screen(output), 'tag prompt missing')
+                if mode == 'escape-alone':
+                    os.write(master, b'\x1b')
+                    wait_for(lambda: 'Tags:' not in screen(output), 'lone Escape did not cancel')
+                elif mode in ('escape-alt', 'escape-alt-board'):
+                    write_parts([b'\x1b', b'p'], .02)
+                    until = time.monotonic() + .2
+                    while time.monotonic() < until: pump()
+                    assert ('Tags:' in screen(output)) == (mode == 'escape-alt'), 'split Alt chord changed prompt'
+                    assert not (root / 'state/state.toml').exists(), 'split Alt chord pinned'
+                    if mode == 'escape-alt':
+                        os.write(master, b'\x03')
+                        wait_for(lambda: 'Tags:' not in screen(output), 'Ctrl-C did not cancel')
+                elif mode == 'paste-timeout':
+                    os.write(master, b'\x1b[200~foo')
+                    until = time.monotonic() + .4
+                    while time.monotonic() < until: pump()
+                    os.write(master, b'\x03')
+                    wait_for(lambda: 'Tags:' not in screen(output), 'unterminated paste swallowed Ctrl-C')
+                else:
+                    if mode == 'paste-nested':
+                        os.write(master, b'\x1b[200~foo\x1b[200~bar\x1b[201~')
+                        expected = 'foobar'
+                    else:
+                        gap = .05 if mode == 'escape-bytewise-50' else .02 if mode == 'escape-bytewise' else int(mode.split('-')[1]) / 1000
+                        payload = b'\x1b[200~bar\x1b[201~'
+                        if mode.startswith('escape-bytewise'):
+                            write_parts([bytes([byte]) for byte in payload], gap)
+                        else:
+                            write_parts([payload[:1], payload[1:]], gap)
+                        expected = 'bar'
+                    wait_for(lambda: 'Tags: ' + expected in screen(output), 'fragmented/nested paste damaged prompt')
+                    assert '[200~' not in screen(output), 'nested delimiter leaked into prompt'
+                    os.write(master, b'\r')
+                    state = root / 'state/state.toml'
+                    wait_for(lambda: state.exists(), 'tags were not saved')
+                    saved = tomllib.loads(state.read_text())
+                    assert list(saved['tags'].values()) == [[expected]], saved
+                    assert saved['pins'] == [] and saved['archived'] == [], saved
+                until = time.monotonic() + .15
+                while time.monotonic() < until: pump()
+                os.write(master, b'q')
+            elif mode == 'paste-handoff':
+                wait_for(lambda: '1 projects' in screen(output), 'initial scan did not arrive')
+                os.write(master, b'n')
+                wait_for(lambda: 'Agent:' in screen(output), 'agent picker missing')
+                os.write(master, b'c')
+                wait_for(lambda: (root / 'ready').exists(), 'child did not start')
+                os.write(master, b'WORLD\n\x1b[200~foo')
+                wait_for(lambda: (root / 'finished').exists() and 'launched ' in screen(output), 'unterminated paste broke child handoff')
+                assert (root / 'agent-input').read_text() == 'WORLD'
+                until = time.monotonic() + .4
+                while time.monotonic() < until: pump()
+                os.write(master, b'q')
+            elif mode == 'typeahead':
+                wait_for(lambda: '1 projects' in screen(output), 'initial scan did not arrive')
+                os.write(master, b'n')
+                wait_for(lambda: 'Agent:' in screen(output), 'agent picker missing')
+                os.write(master, b'cp\n')
+                wait_for(lambda: (root / 'ready').exists(), 'child did not start')
+                until = time.monotonic() + .1
+                while time.monotonic() < until: pump()
+                assert not (root / 'finished').exists(), 'discard policy passed type-ahead to the child'
+                os.write(master, b'WORLD\n')
+                wait_for(lambda: (root / 'finished').exists() and 'launched ' in screen(output), 'child did not return')
+                assert (root / 'agent-input').read_text() == 'WORLD'
+                until = time.monotonic() + .15
+                while time.monotonic() < until: pump()
+                state = root / 'state/state.toml'
+                assert not state.exists() or tomllib.loads(state.read_text())['pins'] == [], 'type-ahead replayed as pin'
+                os.write(master, b'q')
+            elif mode in ('paste-long', 'paste-lock'):
+                wait_for(lambda: '1 projects' in screen(output), 'initial scan did not arrive')
+                if mode == 'paste-lock':
+                    os.write(master, b't')
+                    wait_for(lambda: 'Tags:' in screen(output), 'tag prompt missing')
+                    state_dir = root / 'state'
+                    state_dir.mkdir(exist_ok=True)
+                    lock_fd = os.open(state_dir, os.O_RDONLY)
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                    def release_lock():
+                        time.sleep(.3)
+                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                        os.close(lock_fd)
+                    release = threading.Thread(target=release_lock)
+                    release.start()
+                    os.write(master, b'\x1b[200~foo\x1b[201~\rp\x1b[201~')
+                    release.join(timeout=1)
+                    wait_for(lambda: (state_dir / 'state.toml').exists(), 'tag save did not finish')
+                else:
+                    os.write(master, b'\x1b[200~foo\x1b[201~' + b'x' * 100 + b'p\x1b[201~')
+                until = time.monotonic() + .4
+                while time.monotonic() < until: pump()
+                state = root / 'state/state.toml'
+                assert proc.poll() is None, 'paste suffix quit the application'
+                assert not state.exists() or tomllib.loads(state.read_text())['pins'] == [], 'busy UI let the paste suffix pin'
+                if mode == 'paste-lock': assert list(tomllib.loads(state.read_text())['tags'].values()) == [['foo']]
+                os.write(master, b'q')
+            elif mode == 'paste-injection':
+
+                wait_for(lambda: '1 projects' in screen(output), 'initial scan did not arrive')
+                os.write(master, b'\x1b[200~foo\x1b[201~pq\x1b[201~')
+                until = time.monotonic() + .12
+                while time.monotonic() < until: pump()
+                assert proc.poll() is None, 'paste terminator injection quit the app'
+                assert not (root / 'state/state.toml').exists(), 'paste terminator injection saved a pin'
+                os.write(master, b'q')
+            elif mode == 'paste':
+                wait_for(lambda: '1 projects' in screen(output), 'initial scan did not arrive')
+                assert b'\x1b[?2004h' in output, 'bracketed paste not enabled'
+                os.write(master, b't')
+                wait_for(lambda: 'Tags:' in screen(output), 'tag prompt missing')
+                os.write(master, b'\x1b[200~foo,bar\np\nq\x1b[201~')
+                wait_for(lambda: 'foo,barpq' in screen(output), 'paste did not stay in prompt')
+                os.write(master, b'\r')
+                state = root / 'state/state.toml'
+                wait_for(lambda: state.exists(), 'tags were not saved')
+                saved = tomllib.loads(state.read_text())
+                assert list(saved['tags'].values()) == [['barpq', 'foo']], saved
+                assert saved['pins'] == [] and saved['archived'] == [], saved
+                assert proc.poll() is None, 'paste quit the application'
+                # A deliberate quit follows the paste-burst quarantine.
+                until = time.monotonic() + .06
+                while time.monotonic() < until: pump()
                 os.write(master, b'q')
             elif mode in ('TERM', 'INT', 'HUP'):
                 os.kill(pid, getattr(signal, 'SIG' + mode))
@@ -260,11 +446,13 @@ def case(mode):
                 flags = (root / 'exit-flags').read_text()
                 for flag in ('icanon', 'echo', 'icrnl'):
                     assert re.search(r'(?<!-)\b' + flag + r'\b', flags), flags
+            if direct: typescript.write_bytes(output)
             data = typescript.read_bytes()
             frame = data.index(b'Projects')
             assert b'\x1b[?1049l' in data[frame:], f'{mode}: alternate screen not restored'
+            assert b'\x1b[?2004l' in data[frame:], f'{mode}: bracketed paste not disabled'
             assert b'\x1b[?25h' in data[frame:], f'{mode}: cursor not restored'
-            if sys.platform != 'darwin':
+            if direct or sys.platform != 'darwin':
                 expected = 128 + getattr(signal, 'SIG' + mode) if mode in ('TERM','INT','HUP') else (86 if mode == 'hook' else 0)
                 assert proc.returncode == expected, (mode, proc.returncode, expected)
             print(f'{mode}: frame, exit, alternate-screen and cursor restoration passed')
@@ -281,5 +469,5 @@ def case(mode):
 if __name__ == '__main__':
     BINARY = str(Path(sys.argv[1]).resolve())
     PROBE = str(Path(sys.argv[2]).resolve()) if len(sys.argv) > 2 else None
-    for mode in ([os.environ['SBOARD_PTY_CASE']] if 'SBOARD_PTY_CASE' in os.environ else ['TERM'] if PROBE is None else ['TERM', 'INT', 'HUP', 'q', 'scan-panic', 'error', 'hook', 'dumb', 'stdin', 'idle', 'color-empty', 'color-off', 'unwatched', 'resume', 'attention-resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure', 'cli-termios']):
+    for mode in ([os.environ['SBOARD_PTY_CASE']] if 'SBOARD_PTY_CASE' in os.environ else ['TERM'] if PROBE is None else ['TERM', 'INT', 'HUP', 'q', 'scan-panic', 'error', 'hook', 'dumb', 'stdin', 'idle', 'color-empty', 'color-off', 'unwatched', 'resume', 'attention-resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure', 'cli-termios', 'paste', 'paste-injection', 'typeahead', 'paste-long', 'paste-lock', 'escape-1', 'escape-20', 'escape-40', 'escape-bytewise', 'escape-bytewise-50', 'escape-alt', 'escape-alt-board', 'escape-alone', 'paste-timeout', 'paste-handoff', 'paste-nested', 'decoder-keys', 'escape-sequence-prefix']):
         case(mode)
