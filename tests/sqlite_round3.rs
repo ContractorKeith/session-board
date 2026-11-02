@@ -74,23 +74,34 @@ fn unchanged_except_shm(
 }
 #[test]
 fn issue84_stale_empty_journal_never_creates_wal_or_shm() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("store.db");
-    database(&path);
-    Connection::open(&path)
-        .unwrap()
-        .execute_batch("PRAGMA journal_mode=WAL")
-        .unwrap();
-    fs::write(sidecar(&path, "-journal"), []).unwrap();
-    let before = snapshot(temp.path());
-    let scan = grok(&path);
-    assert_eq!(scan.sessions.len(), 2);
-    assert!(scan.warnings.is_empty(), "{:?}", scan.warnings);
-    assert!(
-        snapshot(temp.path()) == before,
-        "stale journal caused database/sidecar mutation"
-    );
+    for wal_format in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("store.db");
+        database(&path);
+        if wal_format {
+            Connection::open(&path)
+                .unwrap()
+                .execute_batch("PRAGMA journal_mode=WAL")
+                .unwrap();
+        }
+        fs::write(sidecar(&path, "-journal"), []).unwrap();
+        let before = snapshot(temp.path());
+        let scan = grok(&path);
+        if wal_format {
+            assert!(scan.sessions.is_empty());
+            assert_eq!(scan.skipped_stores, 1);
+            assert_eq!(scan.warnings.len(), 1);
+        } else {
+            assert_eq!(scan.sessions.len(), 2);
+            assert!(scan.warnings.is_empty(), "{:?}", scan.warnings);
+        }
+        assert!(
+            snapshot(temp.path()) == before,
+            "stale journal caused database/sidecar mutation"
+        );
+    }
 }
+
 #[test]
 fn issue84_orphan_wal_with_and_without_shm_keeps_committed_rows() {
     for keep_shm in [false, true] {

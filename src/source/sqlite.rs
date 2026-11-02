@@ -6,6 +6,27 @@ use std::{
     time::SystemTime,
 };
 
+// Inspect the path itself: even a symlink to a regular file is not a regular
+// store/sidecar entry. Missing sidecars are normal; missing stores are counted.
+fn regular_entry(path: &Path) -> io::Result<Option<std::fs::Metadata>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_file() => Ok(Some(meta)),
+        Ok(_) => Err(crate::storage::at(path, "not a regular file")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(crate::storage::at(path, error)),
+    }
+}
+fn check_paths(path: &Path) -> io::Result<()> {
+    regular_entry(path)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "database disappeared"))?;
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(suffix);
+        regular_entry(Path::new(&name))?;
+    }
+    Ok(())
+}
+
 #[derive(PartialEq, Eq)]
 struct Stamp {
     size: u64,
@@ -49,6 +70,7 @@ struct Snapshot {
 }
 impl Snapshot {
     fn read(path: &Path) -> io::Result<Self> {
+        check_paths(path)?;
         let mut file = std::fs::File::open(path)?;
         let database = Stamp::new(file.metadata()?)?;
         let mut header = [0; 100];
@@ -59,11 +81,7 @@ impl Snapshot {
         let sidecar = |suffix: &str| {
             let mut name = path.as_os_str().to_os_string();
             name.push(suffix);
-            match std::fs::metadata(Path::new(&name)) {
-                Ok(meta) => Stamp::new(meta).map(Some),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-                Err(error) => Err(error),
-            }
+            regular_entry(Path::new(&name))?.map(Stamp::new).transpose()
         };
         Ok(Self {
             database,
@@ -87,10 +105,10 @@ impl Snapshot {
 struct Database {
     connection: Connection,
     path: PathBuf,
-    immutable_snapshot: Option<Snapshot>,
+    stable_snapshot: Option<Snapshot>,
 }
 
-/// Existing WAL permits SQLite's SHM protocol; no WAL requires a checked immutable read.
+/// Normal read-only locking applies to every on-disk store, including MEMORY-journal writers.
 fn open(path: &Path, result: &mut SourceScan) -> Option<Database> {
     open_with(path, result, || {})
 }
@@ -99,7 +117,7 @@ fn open_with(
     result: &mut SourceScan,
     before_connection: impl FnOnce(),
 ) -> Option<Database> {
-    if let Err(error) = crate::storage::regular_file(path) {
+    if let Err(error) = check_paths(path) {
         result.skipped_stores += 1;
         if error.kind() != io::ErrorKind::NotFound {
             result.warnings.push(format!("{}: {error}", path.display()));
@@ -133,25 +151,7 @@ fn open_with(
         }
     };
     let wal = before.sidecars[0].is_some();
-    // Without WAL, a nonempty rollback journal can contain spilled uncommitted
-    // pages. Skip it rather than risk recovery or reading through its lock.
-    if !wal
-        && before.sidecars[2]
-            .as_ref()
-            .is_some_and(|stamp| stamp.size > 0)
-    {
-        failed(
-            path,
-            &"database may be locked: nonempty rollback journal",
-            result,
-        );
-        return None;
-    }
-    let query = if wal {
-        "mode=ro"
-    } else {
-        "mode=ro&immutable=1"
-    };
+    let query = "mode=ro";
     before_connection();
     let connection = match sqlite_vfs::open(&format!("{uri}?{query}"), flags) {
         Ok(connection) => connection,
@@ -189,12 +189,12 @@ fn open_with(
     Some(Database {
         connection,
         path: absolute,
-        immutable_snapshot: (!wal).then_some(before),
+        stable_snapshot: (!wal).then_some(before),
     })
 }
 
 /// Keep validation around the complete scan so neither source can return a
-/// partial immutable view after a writer changes the store under it.
+/// stale file view after a writer replaces or changes a non-WAL store.
 pub(super) fn scan(
     path: &Path,
     result: &mut SourceScan,
@@ -207,12 +207,12 @@ pub(super) fn scan(
         failed(path, &error, result);
         return;
     }
-    if let Some(before) = database.immutable_snapshot {
+    if let Some(before) = database.stable_snapshot {
         match Snapshot::read(&database.path) {
             Ok(after) if before == after => (),
             Ok(_) => failed(
                 path,
-                &"database changed during immutable scan; discarded result",
+                &"database changed during scan; discarded result",
                 result,
             ),
             Err(error) => failed(path, &error, result),
@@ -262,8 +262,7 @@ mod tests {
             .unwrap()
             .execute_batch("CREATE TABLE test(id)")
             .unwrap();
-        // Also exercise the plain mode=ro path, where immutable cannot mask a
-        // mistakenly read-write connection flag.
+        // Exercise WAL protocol with a genuinely read-only database fd.
         let writer = Connection::open(&path).unwrap();
         writer
             .execute_batch("PRAGMA journal_mode=WAL; INSERT INTO test VALUES (1)")
@@ -312,7 +311,7 @@ mod tests {
         );
     }
     #[test]
-    fn issue83_writer_spills_after_first_query_and_partial_titles_are_discarded() {
+    fn issue83_writer_spills_after_first_query_and_reader_respects_lock() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("store.db");
         let writer = Connection::open(&path).unwrap();
@@ -354,6 +353,11 @@ mod tests {
         assert_eq!(result.skipped_stores, 1);
         assert_eq!(result.warnings.len(), 1);
         assert!(result.warnings[0].contains(path.to_str().unwrap()));
+        assert!(
+            result.warnings[0].contains("locked"),
+            "{:?}",
+            result.warnings
+        );
         writer.execute_batch("ROLLBACK").unwrap();
     }
     #[test]
@@ -399,7 +403,7 @@ mod tests {
             });
             assert_eq!(result.skipped_stores, 1, "missed {change} change");
             assert_eq!(result.warnings.len(), 1);
-            assert!(result.warnings[0].contains("changed during immutable scan"));
+            assert!(result.warnings[0].contains("changed during scan"));
         }
     }
     #[test]
@@ -484,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn issue100_memory_journal_spill_with_restored_mtime_is_rejected() {
+    fn issue100_memory_journal_spill_with_restored_mtime_is_locked() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("store.db");
         let writer = Connection::open(&path).unwrap();
@@ -534,6 +538,11 @@ mod tests {
         );
         assert_eq!(result.skipped_stores, 1);
         assert_eq!(result.warnings.len(), 1);
+        assert!(
+            result.warnings[0].contains("locked"),
+            "{:?}",
+            result.warnings
+        );
         writer.execute_batch("ROLLBACK").unwrap();
     }
     #[test]

@@ -180,7 +180,7 @@ fn sqlite_missing_special_and_corrupt_stores_are_counted() {
     no_sidecars(&path);
 }
 #[test]
-fn sqlite_wal_snapshot_never_creates_sidecars() {
+fn sqlite_closed_wal_without_sidecars_is_skipped_without_creation() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("store.db");
     database(&path, include_str!("../fixtures/grok/session_search.sql"));
@@ -191,8 +191,9 @@ fn sqlite_wal_snapshot_never_creates_sidecars() {
         .unwrap();
     no_sidecars(&path);
     let scan = grok(&path).scan(&Config::default());
-    assert_eq!(scan.sessions.len(), 2);
-    assert!(scan.warnings.is_empty());
+    assert!(scan.sessions.is_empty());
+    assert_eq!(scan.skipped_stores, 1);
+    assert_eq!(scan.warnings.len(), 1);
     no_sidecars(&path);
 }
 #[test]

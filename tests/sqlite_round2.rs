@@ -412,7 +412,7 @@ fn issue68_no_transient_sidecars_during_scan() {
     let path = temp.path().join("store.db");
     database(&path, include_str!("../fixtures/grok/session_search.sql"));
     let connection = Connection::open(&path).unwrap();
-    connection.execute_batch("PRAGMA journal_mode=WAL; BEGIN; WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<5000)
+    connection.execute_batch("BEGIN; WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<5000)
         INSERT INTO session_docs SELECT 'row-'||x, '/home/user/project', 1793534340, 'Title', replace(hex(zeroblob(256)), '00', 'xx'), '' FROM n; COMMIT;").unwrap();
     drop(connection);
     let expected = names(temp.path());

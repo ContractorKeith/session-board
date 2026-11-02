@@ -69,19 +69,26 @@ The `permission`, `project`, migrations, model, tokens and agent-owned archive
 fields are unused. sboard owns its own archive.
 
 SQLite uses the shared read-only scan wrapper described in [grok.md](grok.md).
-Only an existing `-wal` selects normal `mode=ro` locking; **creating or updating
-`-shm` alongside that WAL is allowed SQLite WAL protocol. Creating `-wal` or
-`-journal` is forbidden.** With no WAL use `immutable=1`; an orphan SHM or stale
-zero-byte journal does not change that decision. A nonempty rollback journal
-without WAL is skipped with a warning to exclude uncommitted spilled pages.
-After opening and before the first schema read, database and sidecar identities/set
-are checked again. A private VFS guard prevents CREATE on WAL/journal file opens,
-so a disappearing WAL cannot be recreated even in the later OS-open window.
-After an immutable scan, changes in device/inode, nanosecond mtime/ctime, header
-counter/version signals, or sidecar set/metadata discard all sessions and warn. Normal WAL scans see committed frames without
-a warning. Busy/locked stores are skipped. Schema drift fails soft; live
-verification is still required before claiming compatibility with an installed
-OpenCode version.
+Every on-disk store uses normal `mode=ro` locking with a 200 ms busy timeout;
+**no immutable or nolock fallback**. A MEMORY/OFF-journal transaction can spill
+before an observer snapshot, so the SHARED lock is required to exclude its pages.
+Busy/locked/hot-journal failures skip the store and warn rather than recover it.
+
+**SHM creation/updates beside an existing WAL are allowed SQLite protocol.
+Creating WAL or journal files is forbidden.** The private VFS enforces no CREATE
+on WAL/journal OS opens. A WAL-format database without its WAL can therefore be
+found but skipped when SQLite would need to create that file; the agent must
+supply it. No immutable fallback is used even for that closed-store case.
+
+Before opening, symlink_metadata checks the database and each WAL/SHM/journal
+entry. Existing entries must be regular files: directories, FIFOs, sockets,
+devices and final symlinks (including dangling ones) skip/warn before SQLite.
+The identities/set are rechecked after open and before the first schema read.
+Non-WAL scans also compare device/inode, size, nanosecond mtime/ctime, header
+counter/version bytes and sidecar metadata after reading. SQLite locks provide
+transaction isolation; these checks supplement it for replacement/raw file edits.
+Normal WAL scans see committed frames. Schema drift fails soft; live verification
+is still required before claiming compatibility with an installed OpenCode version.
 
 Fixtures are committed **SQL**: `fixtures/opencode/opencode.sql`, generated into
 a temporary database by `tests/sqlite_sources.rs`, clock 2026-11-01 12:00 UTC.
@@ -110,12 +117,11 @@ APIError (error), boolean error/completed/finish and string completed markers
 invalid IDs/NUL cwds, overrides and a corrupt table leaf; `tests/watch_sources.rs`
 checks OpenCode directory updates and reattachment through `Scans::start`.
 
-Round-3 shared-wrapper tests cover a spilling writer starting after the schema
-query and independent size/mtime/sidecar changes. Byte snapshots now capture SHM
-and explicitly allow its creation/modification only when a WAL exists. Relative
-`OPENCODE_DB=opencode.db` is tested through doctor and a live `Scans::start` probe.
-
-Round-4 shared-opener tests cover WAL removal before/inside the OS-open boundary,
-same-size restored-mtime updates, rename replacement and MEMORY-journal spills.
-Relative overrides still follow cwd if the process itself changes it; the app's
-child-process launches do not change its own cwd.
+Shared-wrapper regressions cover writer locks, WAL removal before/inside the OS
+open, same-size restored-mtime edits, rename replacement and header fingerprints.
+Full byte snapshots capture SHM with its explicit exception only beside WAL.
+Relative `OPENCODE_DB=opencode.db` is tested through doctor and `Scans::start`.
+Round-5 tests reject pre-existing spilled MEMORY transactions and non-regular
+database/sidecar entries, and stress 20 concurrent lists during WAL commits.
+Relative overrides still follow cwd if the process itself changes it; child
+launches do not change the app's cwd.

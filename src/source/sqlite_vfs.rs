@@ -1,5 +1,5 @@
 //! SQLite's stock WAL opener requests CREATE even for read-only databases.
-//! Keep the platform VFS and its locking/SHM protocol, but forbid sidecar creation.
+//! Keep the platform VFS and its locking/SHM protocol, but forbid WAL/journal creation.
 use rusqlite::{Connection, OpenFlags, ffi};
 use std::{
     ffi::{c_char, c_int},
