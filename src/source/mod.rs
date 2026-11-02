@@ -1,6 +1,9 @@
 pub mod claude;
 pub mod codex;
+pub mod grok;
+pub mod opencode;
 mod read;
+mod sqlite;
 use crate::{
     config::Config,
     model::{Agent, Session},
@@ -55,6 +58,14 @@ pub fn registry_at(home: &std::path::Path) -> Registry {
         Box::new(codex::Codex {
             root: codex.join("sessions"),
             index: codex.join("session_index.jsonl"),
+            now,
+        }),
+        Box::new(grok::Grok {
+            path: home.join(".grok/sessions/session_search.sqlite"),
+            now,
+        }),
+        Box::new(opencode::Opencode {
+            path: home.join(".local/share/opencode/opencode.db"),
             now,
         }),
     ]

@@ -39,14 +39,6 @@ pub struct Outcome {
 }
 
 pub fn run(roots: &mut ProjectRoots, options: &Options) -> io::Result<Outcome> {
-    if matches!(
-        options.agent,
-        Some(AgentFilter::Grok | AgentFilter::Opencode)
-    ) {
-        return Err(io::Error::other(
-            "Grok and OpenCode sources are not implemented until M6; use claude_code or codex",
-        ));
-    }
     let home = cli::home()?;
     let (mut config, mut warnings) = Config::load(&Config::path()?)?;
     let (mut state, state_warnings) = State::load(&State::path()?)?;
@@ -56,6 +48,8 @@ pub fn run(roots: &mut ProjectRoots, options: &Options) -> io::Result<Outcome> {
     let disabled = [
         (!config.agents.claude_code, "claude_code"),
         (!config.agents.codex, "codex"),
+        (!config.agents.grok, "grok"),
+        (!config.agents.opencode, "opencode"),
     ]
     .into_iter()
     .filter_map(|(off, name)| off.then_some(name))
@@ -66,12 +60,16 @@ pub fn run(roots: &mut ProjectRoots, options: &Options) -> io::Result<Outcome> {
     if let Some(agent) = options.agent {
         config.agents.claude_code &= agent.agent() == crate::model::Agent::ClaudeCode;
         config.agents.codex &= agent.agent() == crate::model::Agent::Codex;
+        config.agents.grok &= agent.agent() == crate::model::Agent::Grok;
+        config.agents.opencode &= agent.agent() == crate::model::Agent::Opencode;
     }
     let stores = cli::stores(&home);
-    let missing =
-        !(config.agents.claude_code && stores[0].exists || config.agents.codex && stores[1].exists);
+    let missing = !(config.agents.claude_code && stores[0].exists
+        || config.agents.codex && stores[1].exists
+        || config.agents.grok && stores[2].exists
+        || config.agents.opencode && stores[3].exists);
     if missing {
-        warnings.push(format!("no enabled stores found; looked for claude_code at {} and codex at {}; disabled by config: {}", stores[0].path.display(), stores[1].path.display(), if disabled.is_empty() { "none".into() } else { disabled.join(", ") }));
+        warnings.push(format!("no enabled stores found; looked for claude_code at {} and codex at {}, grok at {} and opencode at {}; disabled by config: {}", stores[0].path.display(), stores[1].path.display(), stores[2].path.display(), stores[3].path.display(), if disabled.is_empty() { "none".into() } else { disabled.join(", ") }));
     }
     let project = options
         .project

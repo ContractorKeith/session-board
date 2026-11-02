@@ -60,7 +60,7 @@ def case(mode):
         for row in rows:
             if 'timestamp' in row: row['timestamp'] = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat().replace('+00:00', 'Z')
         (root / 'claude/projects/project/session.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
-        env = dict(os.environ, TERM=os.environ.get('SBOARD_PTY_TERM', 'xterm-256color'),
+        env = dict(os.environ, HOME=str(root), TERM=os.environ.get('SBOARD_PTY_TERM', 'xterm-256color'),
                    CLAUDE_CONFIG_DIR=str(root / 'claude'), CODEX_HOME=str(root / 'codex'),
                    SBOARD_STATE_DIR=str(root / 'state'), SBOARD_CONFIG_DIR=str(root / 'config'))
         if mode == 'unwatched': (root / 'codex/sessions').rmdir()

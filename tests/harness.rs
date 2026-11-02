@@ -293,6 +293,7 @@ fn command(temp: &Path) -> Command {
     command
         .env("CLAUDE_CONFIG_DIR", temp.join(".claude"))
         .env("CODEX_HOME", temp.join(".codex"))
+        .env("HOME", temp)
         .env("SBOARD_STATE_DIR", temp.join("state"))
         .env("SBOARD_CONFIG_DIR", temp.join("config"));
     command

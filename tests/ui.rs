@@ -232,6 +232,7 @@ fn piped_probe_refuses_terminal_setup() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--ignored", "--exact", "terminal_probe"])
         .env_remove("SBOARD_TERMINAL_PROBE")
+        .env("HOME", temp.path())
         .env("SBOARD_STATE_DIR", temp.path().join("state"))
         .env("SBOARD_CONFIG_DIR", temp.path().join("config"))
         .env("CLAUDE_CONFIG_DIR", temp.path().join("claude"))
