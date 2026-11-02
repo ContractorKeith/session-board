@@ -523,6 +523,8 @@ fn config_errors_name_the_file() {
 fn closed_or_full_stdout_does_not_panic() {
     use std::process::Stdio;
     let temp = tempfile::tempdir().unwrap();
+    // An empty but present store keeps the exit code at 0 whether or not the pipe closes first.
+    fs::create_dir_all(temp.path().join(".claude/projects")).unwrap();
     let full = fs::File::create("/dev/full").unwrap();
     let output = command(temp.path())
         .arg("version")
