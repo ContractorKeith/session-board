@@ -9,8 +9,9 @@ MIT. "Done" for v1 is every row marked v1 in `docs/PLAN.md` §4 passing the acce
 §10 on Omarchy, the Mac Studio and GitHub Actions.
 
 ## Status
-M5 in review — attention pane and optional desktop notifications. M0–M3 merged;
-M4 persisted read marks integrate before M5 lands.
+M4 in review — 2026-11-01: persisted pins, tags, read marks, project/session archive,
+activity/attention sorting and tag grouping, with first-run unread and merged atomic saves.
+M0–M3 and M5 merged.
 
 ## Commands
 ```bash

@@ -6,32 +6,40 @@ project, shows working / waiting / idle / error / done, jumps to the tmux pane o
 session, and launches new sessions in a project or a fresh git worktree. Observes agents; never
 owns them. MIT.
 
-Status: M5 in review: attention queue and optional desktop notifications over the Claude Code
-and Codex sources; M3 launch is integrated; M4 read marks follow its merge. See `docs/PLAN.md` for milestones and
+Status: M4 in review: persisted organization, unread marks, sorting and tag grouping over the Claude Code
+and Codex sources. See `docs/PLAN.md` for milestones and
 `AGENTS.md` for commands. The package is `session-board`; the binary is `sboard`.
 
-Run `sboard` in a terminal to see attention, the project tree and session details. Stores refresh live.
-`notify` is re-read on every successful scan; `r` requests an immediate scan after config, state
-or Codex title-index edits. Quiet stores also refresh every minute.
+Run `sboard` in a terminal to see the project tree and session details; stores refresh live; config, state and Codex title-index edits need `r`.
 Use `Tab` to switch between attention and the project tree, `j`/`k` or arrows to move, `h`/`l` to fold/unfold, and `r` to rescan.
+Use `p` to pin the selected project, `t` to edit comma-separated tags in the status bar
+(Enter saves, Esc cancels), `m` to mark the selected session or project read, `a` to archive
+or unarchive it, and `A` to include archived rows. `s` cycles activity/attention sorting;
+`g` switches between project and tag groups. In tag groups, select a session to pin or tag
+its real project; `a` archives the selected session. Pins always sort first.
+Ctrl-J acts as Enter and Ctrl-H as Backspace.
 Press `?` for help, `q` or Ctrl-C to quit.
 Enter jumps or resumes; `n` launches in the selected project; `w` launches in a fresh git worktree.
 Use `sboard open <session-id>` or `sboard new <project-path> [--agent claude_code|codex] [--worktree <branch>]`.
 
 ```bash
-sboard list --json
+sboard list --json --sort attention
+sboard list --group tag
 sboard list --status attention --agent codex
 sboard list --project ~/Projects/example --all
 sboard doctor
 ```
 
 List uses a seven-day window by default. `--all` also includes archived sessions and
-projects. The pane and attention JSON sort sessions globally: waiting, error, then
-done-unread, followed by newest activity and ID. Attention text output keeps the
-project tree, ordering projects by their best attention item. Normal lists
-sort projects by pin and activity, sessions by activity. No read mark still means
-unread in M1; first-run semantics remain M4's decision (#16). IDs include the agent
-prefix. With no enabled implemented store found, list emits its tree and exits 2;
+projects. Attention sorts waiting, error, then done-unread within each project;
+pinned projects sort first, then by their highest-priority session and latest activity.
+Activity mode sorts by pin and activity. Tag groups use `tag:<name>` roots (`%` and `/`
+escaped as `%25` and `%2F` to preserve identity) and retain each
+session's real `project_root`; projects without tags appear under `untagged:` (displayed as untagged). JSON sessions carry a `group` field in tag view
+and appear once per tag; unread counts are per group copy.
+Sessions without read marks are read until the first state save establishes `first_seen`;
+activity after that timestamp is unread, and selecting a session clears its mark.
+IDs include the agent prefix. With no enabled implemented store found, list emits its tree and exits 2;
 a found but empty store succeeds. Doctor is diagnostic and succeeds with missing
 stores; `doctor --json` returns `{ "stores": [...], "tmux": "..." }`, distinguishing
 the tmux version, no server, and a missing executable. Broken output pipes exit 0.
@@ -46,6 +54,17 @@ reading. FIFOs, devices, directories and symlink files are rejected without open
 them; bad config is an error, bad state warns and uses empty state, and a bad index
 warns/counts a skipped store while falling back to prompt titles.
 
+State saves merge read marks by maximum timestamp and apply only additions/removals since
+the last-loaded snapshot onto the latest pins, tags, archives and preferences. The directory
+lock times out after two seconds. Corrupt
+state is copied to `state.toml.corrupt-<unix seconds>` before saving. Invalid UTF-8 state
+paths and sessions are skipped with a warning. Sort, grouping and archived-view preferences
+survive TUI restarts. `list` always defaults to activity sorting and project grouping;
+`--sort` and `--group` change only that invocation.
+
+Terminal input is read independently of scans and saves. Paste bursts end only after the
+reader observes a quiet gap; pending type-ahead is discarded when transferring the terminal
+to or from an agent. Tag prompts merge edits against the tags present when they opened.
 The attention pane shows waiting, error and done-unread sessions in the same order as
 `sboard list --status attention --json`. With attention focused, `h` collapses it and `l`
 expands it; collapsed panes ignore movement. Navigation keeps projects folded; Enter unfolds
@@ -65,3 +84,5 @@ commands warn once in the status bar, and a missing command becomes a no-op.
 Desktop notifications are per sboard process: two instances may each announce the same
 transition. A notifier that deliberately daemonizes with `setsid()` and forks again leaves
 the command process group and is outside the five-second process-group timeout.
+
+Attention JSON is a flat queue ordered globally by waiting, error and done-unread.

@@ -15,13 +15,17 @@ from terminal import screen
 from pty_probe import deadline, read_ready, wait_exit
 
 binary = str(Path(sys.argv[1]).resolve())
-for mode in ([sys.argv[2]] if len(sys.argv) > 2 else ('slow', 'disabled', 'fail', 'timeout', 'scan-start')):
+for mode in ([sys.argv[2]] if len(sys.argv) > 2 else ('slow', 'disabled', 'fail', 'timeout', 'scan-start', 'archive-session', 'archive-project')):
     stage = 'setup'
     with deadline(lambda: f'tui_notifications_use_real_scan_events_and_config_without_blocking_help [{mode}]: waiting for {stage}'), tempfile.TemporaryDirectory() as scratch, tempfile.TemporaryFile() as errors_file:
         root = Path(scratch)
         for directory in ('claude/projects/project', 'codex/sessions', 'config', 'bin'):
             (root / directory).mkdir(parents=True)
         (root / 'config/config.toml').write_text('notify = ' + ('false' if mode == 'disabled' else 'true') + '\n')
+        if mode in ('archive-session', 'archive-project'):
+            (root / 'state').mkdir()
+            archived = 'claude_code:stable' if mode == 'archive-session' else str(root.resolve())
+            (root / 'state/state.toml').write_text('first_seen = 0\narchived = [' + json.dumps(archived) + ']\n')
         transcript = root / 'claude/projects/project/session.jsonl'
         log = root / 'calls'
         def fixture(status, target=None, identity='stable'):
@@ -82,8 +86,20 @@ for mode in ([sys.argv[2]] if len(sys.argv) > 2 else ('slow', 'disabled', 'fail'
             wait(lambda: '1 projects' in screen(output), 'initial scan missing')
             if mode != 'scan-start':
                 assert not log.exists(), 'initial scan notified'
-                fixture('waiting')
-            if mode == 'disabled':
+                if mode in ('archive-session', 'archive-project'):
+                    os.write(master, b'A')
+                    wait(lambda: '[archived shown]' in screen(output), 'archived view missing')
+                    fixture('done')
+                else:
+                    fixture('waiting')
+            if mode in ('archive-session', 'archive-project'):
+                wait(lambda: '✓ claude_code' in screen(output), 'archived done scan missing')
+                until = time.monotonic() + .5
+                while time.monotonic() < until: pump()
+                second = subprocess.run([binary, 'list', '--status', 'attention', '--json'], env=env, capture_output=True, check=True, timeout=5)
+                assert json.loads(second.stdout) == []
+                assert not log.exists(), 'archived session produced a desktop notification'
+            elif mode == 'disabled':
                 wait(lambda: 'waiting' in screen(output), 'transition scan missing')
                 until = time.monotonic() + .5
                 while time.monotonic() < until:

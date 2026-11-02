@@ -276,6 +276,31 @@ impl Transitions {
         notifier: &mut impl Notifier,
         now: i64,
     ) {
+        self.scan_at_with_state(
+            projects,
+            &crate::state::State::default(),
+            enabled,
+            notifier,
+            now,
+        );
+    }
+    pub fn scan_with_state(
+        &mut self,
+        projects: &[Project],
+        state: &crate::state::State,
+        enabled: bool,
+        notifier: &mut impl Notifier,
+    ) {
+        self.scan_at_with_state(projects, state, enabled, notifier, unix_time());
+    }
+    fn scan_at_with_state(
+        &mut self,
+        projects: &[Project],
+        state: &crate::state::State,
+        enabled: bool,
+        notifier: &mut impl Notifier,
+        now: i64,
+    ) {
         // Raw pairs still deduplicate across clock steps; floors belong to one clock interval.
         if self.clock.is_some_and(|previous| now < previous) {
             for history in self.announced.values_mut() {
@@ -305,6 +330,8 @@ impl Transitions {
                     );
                 current.insert(key.clone(), event);
                 if enabled
+                    && !project.archived
+                    && !state.session_archived(session)
                     && changed
                     && !announced
                     && floor.is_none_or(|oldest| session.last_activity_at >= oldest)
@@ -387,5 +414,56 @@ mod tests {
         let history = tracker.announced.values().next().unwrap();
         assert_eq!(history.len(), 32);
         assert_eq!(history[0].event, (Status::Waiting, 1009));
+    }
+    #[test]
+    fn archived_transitions_stay_silent_without_replaying_or_muting_read_marks() {
+        for project_archive in [false, true] {
+            let mut projects: Vec<Project> =
+                serde_json::from_str(include_str!("../tests/fixtures/attention-projects.json"))
+                    .unwrap();
+            projects.truncate(1);
+            projects[0].sessions.truncate(1);
+            let id = projects[0].sessions[0].id.clone();
+            let root = projects[0].sessions[0]
+                .project_root
+                .to_string_lossy()
+                .into_owned();
+            let mut state = crate::state::State {
+                first_seen: Some(0),
+                ..Default::default()
+            };
+            state
+                .archived
+                .push(if project_archive { root } else { id.clone() });
+            let mut tracker = Transitions::default();
+            let mut recording = Recording::default();
+            projects[0].sessions[0].status = Status::Working;
+            projects[0].sessions[0].last_activity_at = 1000;
+            tracker.scan_at_with_state(&projects, &state, true, &mut recording, 1000);
+            projects[0].sessions[0].status = Status::Done;
+            projects[0].sessions[0].last_activity_at = 1001;
+            tracker.scan_at_with_state(&projects, &state, true, &mut recording, 1001);
+            assert!(recording.calls.is_empty());
+            state.archived.clear();
+            tracker.scan_at_with_state(&projects, &state, true, &mut recording, 1002);
+            assert!(
+                recording.calls.is_empty(),
+                "unarchive replayed a muted transition"
+            );
+            projects[0].sessions[0].status = Status::Waiting;
+            projects[0].sessions[0].last_activity_at = 1003;
+            tracker.scan_at_with_state(&projects, &state, true, &mut recording, 1003);
+            assert_eq!(recording.calls.len(), 1);
+            projects[0].sessions[0].status = Status::Done;
+            projects[0].sessions[0].last_activity_at = 1004;
+            state.read.insert(id, 1004);
+            assert!(!state.unread(&projects[0].sessions[0]));
+            tracker.scan_at_with_state(&projects, &state, true, &mut recording, 1004);
+            assert_eq!(
+                recording.calls.len(),
+                2,
+                "read marks suppressed transition notifications"
+            );
+        }
     }
 }

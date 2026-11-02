@@ -30,6 +30,10 @@ pub enum Commands {
         agent: Option<AgentFilter>,
         #[arg(long)]
         all: bool,
+        #[arg(long, value_enum)]
+        sort: Option<crate::scan::Sort>,
+        #[arg(long, value_enum)]
+        group: Option<crate::scan::Group>,
     },
     Doctor {
         #[arg(long)]
@@ -152,7 +156,18 @@ pub fn doctor(out: &mut impl Write, home: &Path, json: bool) -> io::Result<()> {
         ..Default::default()
     };
     for (store, source) in stores.iter_mut().zip(crate::source::registry_at(home)) {
-        let result = source.scan(&config);
+        let mut result = source.scan(&config);
+        result.sessions.retain(|session| {
+            if crate::scan::valid_session_paths(session) {
+                true
+            } else {
+                result.skipped_sessions += 1;
+                result
+                    .warnings
+                    .push(format!("non-UTF-8 session path skipped: {}", session.id));
+                false
+            }
+        });
         store.sessions = result.sessions.len();
         let mut ids = std::collections::HashSet::new();
         store.duplicate_ids = result
@@ -207,30 +222,9 @@ pub fn filter(
     all: bool,
 ) {
     use crate::model::{Session, Status};
-    let unread = |s: &Session| {
-        state
-            .read
-            .get(&s.id)
-            .is_none_or(|t| s.last_activity_at > *t)
-    };
+    let unread = |s: &Session| state.unread(s);
+    let rank = |s: &Session| crate::scan::rank(s, state);
     let attention = matches!(status, Some(StatusFilter::Attention));
-    let order: std::collections::HashMap<_, _> = if attention {
-        crate::attention::attention(projects, state)
-            .into_iter()
-            .enumerate()
-            .map(|(index, item)| {
-                (
-                    (
-                        item.session.id.clone(),
-                        item.session.transcript_path.clone(),
-                    ),
-                    index,
-                )
-            })
-            .collect()
-    } else {
-        Default::default()
-    };
     projects.retain_mut(|p| {
         if project.is_some_and(|root| root != p.root) || (!all && p.archived) {
             return false;
@@ -246,7 +240,7 @@ pub fn filter(
             match status {
                 None => true,
                 Some(StatusFilter::Attention) => {
-                    order.contains_key(&(s.id.clone(), s.transcript_path.clone()))
+                    rank(s) < 2 || (s.status == Status::Done && unread(s))
                 }
                 Some(f) => {
                     s.status
@@ -263,52 +257,47 @@ pub fn filter(
         p.unread_count = p.sessions.iter().filter(|s| unread(s)).count();
         !p.sessions.is_empty() || (!had_sessions && status.is_none() && agent.is_none())
     });
-    let order: std::collections::HashMap<_, _> = if attention {
-        crate::attention::attention(projects, state)
-            .into_iter()
-            .enumerate()
-            .map(|(index, item)| {
-                (
-                    (
-                        item.session.id.clone(),
-                        item.session.transcript_path.clone(),
-                    ),
-                    index,
-                )
-            })
-            .collect()
-    } else {
-        Default::default()
-    };
-    if attention {
-        for p in projects.iter_mut() {
-            p.sessions
-                .sort_by_key(|s| order[&(s.id.clone(), s.transcript_path.clone())]);
-        }
-    }
-    projects.sort_by(|a, b| {
-        let activity =
-            |p: &crate::model::Project| p.sessions.first().map_or(i64::MIN, |s| s.last_activity_at);
-        let priority = |p: &crate::model::Project| {
-            p.sessions.first().map_or(usize::MAX, |s| {
-                order[&(s.id.clone(), s.transcript_path.clone())]
-            })
-        };
-        (if attention {
-            priority(a).cmp(&priority(b))
+    crate::scan::organize(
+        projects,
+        state,
+        if attention {
+            crate::scan::Sort::Attention
         } else {
-            b.pinned.cmp(&a.pinned)
-        })
-        .then_with(|| activity(b).cmp(&activity(a)))
-        .then_with(|| a.root.cmp(&b.root))
-    });
+            crate::scan::Sort::Activity
+        },
+        crate::scan::Group::Project,
+    );
 }
 
-/// Attention filtering already removed read done sessions; keep JSON flat across projects.
-pub fn attention_json(out: &mut impl Write, projects: &[crate::model::Project]) -> io::Result<()> {
-    let state = crate::state::State::default();
-    let items = crate::attention::attention(projects, &state);
-    let sessions: Vec<_> = items.iter().map(|item| item.session).collect();
+/// The filtered attention projection is flat and globally ordered in JSON.
+pub fn attention_json(
+    out: &mut impl Write,
+    projects: &[crate::model::Project],
+    state: &crate::state::State,
+) -> io::Result<()> {
+    let items = crate::attention::attention(projects, state);
+    let sessions: Vec<_> = items
+        .iter()
+        .map(|item| {
+            let mut row = serde_json::to_value(item.session)?;
+            row["unread"] = state.unread(item.session).into();
+            row["archived"] = state.session_archived(item.session).into();
+            row["pinned"] = state.pins.contains(&item.session.project_root).into();
+            row["tags"] = serde_json::to_value(
+                state
+                    .tags
+                    .get(&item.session.project_root)
+                    .cloned()
+                    .unwrap_or_default(),
+            )?;
+            if item.project.root.starts_with("untagged:")
+                || item.project.root.to_string_lossy().starts_with("tag:")
+            {
+                row["group"] = item.project.root.to_string_lossy().into_owned().into();
+            }
+            Ok(row)
+        })
+        .collect::<Result<_, serde_json::Error>>()?;
     writeln!(out, "{}", serde_json::to_string_pretty(&sessions)?)
 }
 
@@ -318,15 +307,56 @@ pub fn list(
     projects: &[crate::model::Project],
     json: bool,
 ) -> io::Result<()> {
+    list_with_state(out, projects, json, &crate::state::State::default())
+}
+
+pub fn list_with_state(
+    out: &mut impl Write,
+    projects: &[crate::model::Project],
+    json: bool,
+    state: &crate::state::State,
+) -> io::Result<()> {
     if json {
-        writeln!(out, "{}", serde_json::to_string_pretty(projects)?)?;
+        let mut value = serde_json::to_value(projects)?;
+        for (project, encoded) in projects.iter().zip(value.as_array_mut().unwrap()) {
+            for (session, row) in project
+                .sessions
+                .iter()
+                .zip(encoded["sessions"].as_array_mut().unwrap())
+            {
+                if project.root.starts_with("untagged:")
+                    || project.root.to_string_lossy().starts_with("tag:")
+                {
+                    row["group"] = project.root.to_string_lossy().into_owned().into();
+                }
+                row["unread"] = state.unread(session).into();
+                row["archived"] = (state.archived.contains(&session.id)
+                    || state
+                        .archived
+                        .contains(&session.project_root.to_string_lossy().into_owned()))
+                .into();
+            }
+        }
+        writeln!(out, "{}", serde_json::to_string_pretty(&value)?)?;
     } else {
         for project in projects {
             writeln!(
                 out,
-                "{} ({} sessions)",
+                "{} ({} sessions){}{}{}{}",
                 project.root.display(),
-                project.sessions.len()
+                project.sessions.len(),
+                if project.unread_count > 0 {
+                    format!(" •{}", project.unread_count)
+                } else {
+                    String::new()
+                },
+                if project.archived { " [archived]" } else { "" },
+                if project.pinned { " [pinned]" } else { "" },
+                if project.tags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" #{}", project.tags.join(" #"))
+                }
             )?;
             for session in &project.sessions {
                 writeln!(
@@ -339,7 +369,21 @@ pub fn list(
                         .as_str()
                         .unwrap_or_default(),
                     session.id,
-                    session.title
+                    format_args!(
+                        "{}{}{}",
+                        session.title,
+                        if state.unread(session) { " •" } else { "" },
+                        if project.archived
+                            || state.archived.contains(&session.id)
+                            || state
+                                .archived
+                                .contains(&session.project_root.to_string_lossy().into_owned())
+                        {
+                            " [archived]"
+                        } else {
+                            ""
+                        }
+                    )
                 )?;
             }
         }

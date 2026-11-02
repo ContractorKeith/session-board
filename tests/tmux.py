@@ -51,7 +51,8 @@ def case(mode):
         config = root / 'tmux.conf'
         config.write_text('set -g default-shell /bin/sh\nset -g exit-empty off\n')
         socket = 'sboard-test-' + uuid.uuid4().hex
-        tmux = [TMUX, '-f', str(config), '-L', socket]
+        # Unicode pane-path framing must not depend on the runner's locale.
+        tmux = [TMUX, '-u', '-f', str(config), '-L', socket]
         def run_tmux(*args):
             return subprocess.run(tmux + list(args), cwd=root, env=env,
                                   capture_output=True, timeout=5, check=True)

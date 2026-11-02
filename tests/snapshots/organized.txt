@@ -1,0 +1,22 @@
+┌Attention─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│◐ waiting claude_code project · User placeholder · 1m                                                                                                         │
+│◐ waiting codex       project · User placeholder · 1m                                                                                                         │
+│✕ error   codex       project · User placeholder · 1m                                                                                                         │
+│✕ error   claude_code project · User placeholder · 40m                                                                                                        │
+│+3 below                                                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌Projects · activity [archived shown]──────────────────────────────────────────────────┐┌Session───────────────────────────────────────────────────────────────┐
+│› ▾ project (14) •13 [pinned] #client #urgent                                         ││Select a session                                                      │
+│    ✓ claude_code  1m  Title placeholder •                                            ││                                                                      │
+│    ✕ claude_code  1m  User placeholder [archived]                                    ││                                                                      │
+│    ● claude_code  1m  User placeholder •                                             ││                                                                      │
+│    ◐ claude_code  1m  User placeholder •                                             ││                                                                      │
+│    ● claude_code  1m  User placeholder •                                             ││                                                                      │
+│    ✓ codex        1m  Title placeholder •                                            ││                                                                      │
+│    ✕ codex        1m  User placeholder •                                             ││                                                                      │
+│    ○ codex        1m  User placeholder •                                             ││                                                                      │
+│    ◐ codex        1m  User placeholder •                                             ││                                                                      │
+│    ● codex        1m  User placeholder •                                             ││                                                                      │
+│    ✕ claude_code 40m  User placeholder •                                             ││                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────┘
+7 need you · 1 projects                                                                                                               ? help · r rescan · q quit

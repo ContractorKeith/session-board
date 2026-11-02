@@ -111,6 +111,8 @@ fn scan_runs_all_enabled_sources_resolves_groups_and_applies_state() {
         tags: BTreeMap::from([("/project".into(), vec!["client".into()])]),
         archived: vec!["/other".into()],
         read: BTreeMap::from([("one".into(), 200)]),
+        first_seen: Some(0),
+        ..Default::default()
     };
     let config = Config {
         roots: vec!["/empty".into()],
@@ -179,12 +181,20 @@ fn state_and_config_round_trip_atomic_replacement_and_corrupt_state() {
         pins: vec!["/project".into()],
         tags: BTreeMap::from([("/project".into(), vec!["client".into()])]),
         archived: vec!["/project".into(), "session-id".into()],
-        read: BTreeMap::from([("session-id".into(), 200)]),
+        read: BTreeMap::from([(
+            "session-id".into(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+        )]),
+        first_seen: Some(0),
+        ..Default::default()
     };
     state.save(&state_path).unwrap();
     assert_eq!(State::load(&state_path).unwrap(), (state.clone(), vec![]));
     State::default().save(&state_path).unwrap();
-    assert_eq!(State::load(&state_path).unwrap().0, State::default());
+    assert_eq!(State::load(&state_path).unwrap().0, state);
     assert_eq!(
         fs::read_dir(state_path.parent().unwrap()).unwrap().count(),
         1
@@ -463,7 +473,12 @@ fn save_writes_through_symlink_and_keeps_mode() {
             .file_type()
             .is_symlink()
     );
-    assert_eq!(State::load(&target).unwrap().0, state);
+    let loaded = State::load(&target).unwrap().0;
+    assert_eq!(
+        loaded.pins,
+        [std::path::PathBuf::from("/new"), "/old".into()]
+    );
+    assert!(loaded.first_seen.is_some());
     assert_eq!(
         fs::metadata(&target).unwrap().permissions().mode() & 0o777,
         0o644

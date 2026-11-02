@@ -153,13 +153,17 @@ Status from the transcript tail, first match wins:
 
 Unread is state, not status: set when a session's `last_activity_at` advances while it is not
 the selected row, cleared when selected or marked. Attention = waiting, error, or done-and-unread.
+Without a read mark, a session is unread only when its activity is newer than `first_seen`, which is written on the first state save; before that, all sessions are read.
 
 State file (`~/.local/state/sboard/state.toml`): `pins = [root]`, `tags = { root = [tag] }`,
-`archived = [root or session id]`, `read = { session_id = last_activity_at }`. Written with a
+`archived = [root or session id]`, `read = { session_id = last_activity_at }`, `first_seen = <unix seconds>`,
+`sort = "activity" | "attention"`, `group = "project" | "tag"`, `show_archived = false`. The last three
+preferences apply to the TUI; list defaults to activity and project. Written with a
 temp file and rename. Config file (`~/.config/sboard/config.toml`): `roots = []` (extra project
 roots to include even with no sessions), `window_days = 7`, `agents = { claude_code = true, ... }`,
 `notify = false`, `tmux.socket = ""`.
 
+Archived projects and sessions do not emit desktop notifications; read marks do not suppress transition notifications.
 Notification transitions compare observed status/activity pairs, without a scan-time or
 activity watermark. First-seen sessions have a five-minute age window against the current
 clock. Retain the last 32 announced raw pairs per session and reject activity below the
@@ -175,7 +179,7 @@ the command process group and is outside the five-second process-group timeout.
 ```
 sboard                         # TUI
 sboard list [--json] [--project <path>] [--status working|waiting|idle|error|done|attention]
-            [--agent <a>] [--all]           # --all includes archived and beyond window_days
+            [--agent <a>] [--sort activity|attention] [--group project|tag] [--all]           # --all includes archived and beyond window_days
 sboard doctor [--json]         # stores found, sessions per source, skipped lines, tmux, git
 sboard open <session-id>       # jump or resume, same as Enter
 sboard new <project-path> [--agent <a>] [--worktree <branch>]
@@ -183,7 +187,7 @@ sboard version
 ```
 
 TUI keys: `j k` move, `h l` fold, `Enter` open, `n` new, `w` new in worktree, `p` pin, `t` tag,
-`m` mark read, `a` archive toggle, `A` show archived, `s` cycle sort, `/` filter, `r` rescan,
+`m` mark read, `a` archive toggle, `A` show archived, `s` cycle sort, `g` group by tag/project, `/` filter, `r` rescan,
 `?` help, `q` quit. Exit codes: 0 ok, 1 usage, 2 no stores found.
 
 ## 8. Milestones

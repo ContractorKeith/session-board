@@ -9,15 +9,32 @@ use crate::{
 };
 use std::{io, path::PathBuf};
 
-#[derive(Default)]
 pub struct Options {
     pub project: Option<PathBuf>,
     pub status: Option<StatusFilter>,
     pub agent: Option<AgentFilter>,
     pub all: bool,
+    pub sort: Option<scan::Sort>,
+    pub group: Option<scan::Group>,
+    /// The background TUI scan retains archives for its local view toggle.
+    pub show_archived: bool,
+}
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            project: None,
+            status: None,
+            agent: None,
+            all: false,
+            sort: Some(scan::Sort::Activity),
+            group: Some(scan::Group::Project),
+            show_archived: true,
+        }
+    }
 }
 pub struct Outcome {
     pub scan: Scan,
+    pub state: State,
     pub exit_code: i32,
 }
 
@@ -34,6 +51,7 @@ pub fn run(roots: &mut ProjectRoots, options: &Options) -> io::Result<Outcome> {
     let (mut config, mut warnings) = Config::load(&Config::path()?)?;
     let (mut state, state_warnings) = State::load(&State::path()?)?;
     warnings.extend(state_warnings);
+    warnings.extend(State::cleanup(&State::path()?));
     warnings.extend(normalize_settings(&mut config, &mut state, &home));
     let disabled = [
         (!config.agents.claude_code, "claude_code"),
@@ -76,19 +94,36 @@ pub fn run(roots: &mut ProjectRoots, options: &Options) -> io::Result<Outcome> {
         &mut result.projects,
         &config.tmux.socket,
     ));
+    result.missing_projects = result
+        .projects
+        .iter()
+        .filter(|p| !p.root.is_dir())
+        .map(|p| p.root.clone())
+        .collect();
     cli::filter(
         &mut result.projects,
         &state,
         project.as_deref(),
         options.status,
         options.agent,
-        options.all,
+        options.all || options.show_archived,
+    );
+    scan::organize(
+        &mut result.projects,
+        &state,
+        if matches!(options.status, Some(StatusFilter::Attention)) {
+            scan::Sort::Attention
+        } else {
+            options.sort.unwrap_or_default()
+        },
+        options.group.unwrap_or_default(),
     );
     warnings.append(&mut result.warnings);
     warnings.extend(roots.take_warnings());
     result.warnings = warnings;
     Ok(Outcome {
         scan: result,
+        state,
         exit_code: if missing { 2 } else { 0 },
     })
 }
