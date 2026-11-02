@@ -75,6 +75,7 @@ pub struct Store {
     pub reason: String,
     pub sessions: usize,
     pub skipped_lines: usize,
+    pub duplicate_ids: usize,
     pub skipped_stores: usize,
     pub skipped_sessions: usize,
     pub warnings: Vec<String>,
@@ -118,6 +119,7 @@ pub fn stores(home: &Path) -> Vec<Store> {
             reason,
             sessions: 0,
             skipped_lines: 0,
+            duplicate_ids: 0,
             skipped_stores: usize::from(!exists),
             skipped_sessions: 0,
             warnings: vec![],
@@ -140,6 +142,12 @@ pub fn doctor(out: &mut impl Write, home: &Path, json: bool) -> io::Result<()> {
     for (store, source) in stores.iter_mut().zip(crate::source::registry_at(home)) {
         let result = source.scan(&config);
         store.sessions = result.sessions.len();
+        let mut ids = std::collections::HashSet::new();
+        store.duplicate_ids = result
+            .sessions
+            .iter()
+            .filter(|s| !ids.insert(&s.id))
+            .count();
         store.skipped_lines = result.skipped_lines;
         store.skipped_stores = result.skipped_stores;
         store.skipped_sessions = result.skipped_sessions;
@@ -152,14 +160,15 @@ pub fn doctor(out: &mut impl Write, home: &Path, json: bool) -> io::Result<()> {
         for store in stores {
             writeln!(
                 out,
-                "{}: {} ({}); sessions: {}, skipped lines: {}, skipped stores: {}, skipped sessions: {}",
+                "{}: {} ({}); sessions: {}, skipped lines: {}, skipped stores: {}, skipped sessions: {}, duplicate ids: {}",
                 store.agent,
                 store.path.display(),
                 store.reason,
                 store.sessions,
                 store.skipped_lines,
                 store.skipped_stores,
-                store.skipped_sessions
+                store.skipped_sessions,
+                store.duplicate_ids
             )?;
             for warning in store.warnings {
                 writeln!(out, "  {warning}")?;

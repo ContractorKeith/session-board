@@ -4,10 +4,8 @@ mod watch;
 use clap::Parser;
 use session_board::{
     cli::{self, Cli, Commands},
-    config::Config,
-    project::{ProjectRoots, normalize, normalize_settings},
-    scan, source,
-    state::State,
+    pipeline::{self, Options},
+    project::ProjectRoots,
 };
 use std::io::{self, Write};
 
@@ -32,12 +30,16 @@ fn main() {
 }
 
 fn run(cli: Cli) -> io::Result<i32> {
-    let mut exit = 0;
-    let mut out = io::stdout().lock();
     match cli.command {
-        None => return ui::run(),
-        Some(Commands::Version) => writeln!(out, "{}", env!("CARGO_PKG_VERSION"))?,
-        Some(Commands::Doctor { json }) => cli::doctor(&mut out, &cli::home()?, json)?,
+        None => ui::run(),
+        Some(Commands::Version) => {
+            writeln!(io::stdout().lock(), "{}", env!("CARGO_PKG_VERSION"))?;
+            Ok(0)
+        }
+        Some(Commands::Doctor { json }) => {
+            cli::doctor(&mut io::stdout().lock(), &cli::home()?, json)?;
+            Ok(0)
+        }
         Some(Commands::List {
             json,
             project,
@@ -45,83 +47,22 @@ fn run(cli: Cli) -> io::Result<i32> {
             agent,
             all,
         }) => {
-            if matches!(
-                agent,
-                Some(cli::AgentFilter::Grok | cli::AgentFilter::Opencode)
-            ) {
-                return Err(io::Error::other(
-                    "Grok and OpenCode sources are not implemented until M6; use claude_code or codex",
-                ));
+            let outcome = pipeline::run(
+                &mut ProjectRoots::default(),
+                &Options {
+                    project,
+                    status,
+                    agent,
+                    all,
+                },
+            )?;
+            for warning in &outcome.scan.warnings {
+                cli::warn(warning);
             }
-            let (mut config, mut warnings) = Config::load(&Config::path()?)?;
-            let (mut state, state_warnings) = State::load(&State::path()?)?;
-            let home = cli::home()?;
-            warnings.extend(normalize_settings(&mut config, &mut state, &home));
-            let disabled = [
-                (!config.agents.claude_code, "claude_code"),
-                (!config.agents.codex, "codex"),
-            ]
-            .into_iter()
-            .filter_map(|(off, name)| off.then_some(name))
-            .collect::<Vec<_>>();
-            if all {
-                config.window_days = u32::MAX;
-            }
-            if let Some(agent) = agent {
-                config.agents.claude_code &=
-                    agent.agent() == session_board::model::Agent::ClaudeCode;
-                config.agents.codex &= agent.agent() == session_board::model::Agent::Codex;
-            }
-            let stores = cli::stores(&home);
-            if !(config.agents.claude_code && stores[0].exists
-                || config.agents.codex && stores[1].exists)
-            {
-                exit = 2;
-                cli::warn(&format!(
-                    "no enabled stores found; looked for claude_code at {} and codex at {}; disabled by config: {}",
-                    stores[0].path.display(),
-                    stores[1].path.display(),
-                    if disabled.is_empty() {
-                        "none".into()
-                    } else {
-                        disabled.join(", ")
-                    }
-                ));
-            }
-            let project = project
-                .map(|p| {
-                    let absolute = if p.is_relative() && !p.starts_with("~") {
-                        std::env::current_dir()?.join(p)
-                    } else {
-                        p
-                    };
-                    normalize(&absolute, Some(&home))
-                        .ok_or_else(|| io::Error::other("invalid project path"))
-                })
-                .transpose()?;
-            let mut roots = ProjectRoots::default();
-            let project = project.map(|p| roots.resolve(&p));
-            let mut result = scan::scan(&source::registry(), &config, &state, |cwd| {
-                roots.resolve(cwd)
-            });
-            cli::filter(
-                &mut result.projects,
-                &state,
-                project.as_deref(),
-                status,
-                agent,
-                all,
-            );
-            for warning in warnings
-                .into_iter()
-                .chain(state_warnings)
-                .chain(result.warnings)
-            {
-                cli::warn(&warning);
-            }
-            cli::list(&mut out, &result.projects, json)?;
+            let mut out = io::stdout().lock();
+            cli::list(&mut out, &outcome.scan.projects, json)?;
+            out.flush()?;
+            Ok(outcome.exit_code)
         }
     }
-    out.flush()?;
-    Ok(exit)
 }

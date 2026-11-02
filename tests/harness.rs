@@ -613,6 +613,6 @@ fn default_command_refuses_piped_stdout() {
     assert!(output.stdout.is_empty());
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
-        "sboard: stdout is not a terminal; run sboard list for script output.\n"
+        "sboard: interactive terminal required; run sboard list for script output.\n"
     );
 }

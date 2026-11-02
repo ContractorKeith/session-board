@@ -4,7 +4,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState},
+    widgets::{Block, Borders, List, ListItem},
 };
 use session_board::model::{Agent, Status};
 
@@ -12,7 +12,7 @@ pub fn status(status: Status) -> (&'static str, &'static str, Color) {
     match status {
         Status::Working => ("●", "working", Color::Green),
         Status::Waiting => ("◐", "waiting", Color::Yellow),
-        Status::Idle => ("○", "idle", Color::Gray),
+        Status::Idle => ("○", "idle", Color::Reset),
         Status::Error => ("✕", "error", Color::Red),
         Status::Done => ("✓", "done", Color::Cyan),
     }
@@ -75,10 +75,11 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect, now: i64) {
         .block(Block::default().borders(Borders::ALL).title("Projects"))
         .highlight_symbol("› ")
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-    let mut state =
-        ListState::default().with_selected((!app.rows().is_empty()).then_some(app.selected));
-    frame.render_stateful_widget(list, area, &mut state);
-    // ListState scrolls the selected row into view; selection itself remains an app index.
+    app.page_size
+        .set(usize::from(area.height.saturating_sub(2)).max(1));
+    let mut state = app.list.borrow_mut();
+    state.select((!app.rows().is_empty()).then_some(app.selected));
+    frame.render_stateful_widget(list, area, &mut *state);
 }
 
 #[cfg(test)]

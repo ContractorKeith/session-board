@@ -10,7 +10,7 @@ Status: M2 in review: project tree, session detail and live refresh over the Cla
 and Codex sources. See `docs/PLAN.md` for milestones and
 `AGENTS.md` for commands. The package is `session-board`; the binary is `sboard`.
 
-Run `sboard` in a terminal to see the project tree and session details; stores refresh live.
+Run `sboard` in a terminal to see the project tree and session details; stores refresh live; config, state and Codex title-index edits need `r`.
 Use `j`/`k` or arrows to move, `h`/`l` to fold/unfold, and `r` to rescan.
 Press `?` for help, `q` or Ctrl-C to quit; Enter shows “open lands in M3”.
 

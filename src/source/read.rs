@@ -170,6 +170,14 @@ pub fn text(content: &Value) -> String {
         })
         .unwrap_or_default()
 }
+/// Keep the most recent 8 KiB, on a UTF-8 boundary; status still uses full text.
+pub fn preview(text: &str) -> String {
+    let mut start = text.len().saturating_sub(8192);
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    text[start..].to_owned()
+}
 pub fn string(value: &Value, key: &str) -> String {
     value[key].as_str().unwrap_or_default().to_owned()
 }
@@ -206,7 +214,8 @@ pub fn title(text: &str) -> String {
             }
         } else if c.is_whitespace() {
             clean.push(' ');
-        } else if !c.is_control() {
+        } else if !c.is_control() && !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        {
             clean.push(c);
         }
     }

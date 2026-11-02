@@ -86,3 +86,6 @@ Round 3 tests in `tests/round2.rs` also cover printable/empty native IDs, signed
 numeric timestamp fields, a FIFO index (both list and doctor complete within the
 test deadline), FIFO config/state paths, and control-only index titles falling
 through to actual owner text. Numeric timestamp fields accept ASCII digits only.
+
+Retained last user and assistant text is capped at the latest 8 KiB each,
+on a UTF-8 boundary. Status derivation still sees the full sampled text.

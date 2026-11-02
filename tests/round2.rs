@@ -806,3 +806,83 @@ fn round3_control_only_index_title_falls_through_to_owner_prompt() {
     .scan(&Config::default());
     assert_eq!(scanned.sessions[0].title, "Owner placeholder");
 }
+
+#[test]
+fn round4_text_previews_are_bounded_utf8_tails_for_both_sources() {
+    let text = format!("prefix{}THE END?", "界😀\t".repeat(3000));
+    let mut user = claude_record("user", json!(text));
+    let c = claude(&[user.clone(), ended(&text)]);
+    let x = codex(&[
+        meta(),
+        json!({"timestamp": RECENT, "type":"event_msg", "payload":{"type":"user_message", "message":text}}),
+        json!({"timestamp": RECENT, "type":"event_msg", "payload":{"type":"task_complete", "last_agent_message":text}}),
+    ]);
+    for scanned in [c, x] {
+        let s = &scanned.sessions[0];
+        for preview in [&s.last_user_text, &s.last_assistant_text] {
+            assert!(preview.len() <= 8192);
+            assert!(preview.ends_with("THE END?"));
+            assert!(!preview.starts_with("prefix"));
+        }
+        assert_eq!(s.status, Status::Waiting);
+    }
+    user["message"]["content"] = json!("left\u{202e}right");
+    assert!(!claude(&[user]).sessions[0].title.contains('\u{202e}'));
+}
+
+#[test]
+fn round4_doctor_counts_duplicate_ids() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("claude/projects/project");
+    fs::create_dir_all(&root).unwrap();
+    for (name, text) in [("one", "first"), ("two", "second")] {
+        fs::write(root.join(format!("{name}.jsonl")), encode(&[ended(text)])).unwrap();
+    }
+    let output = command(temp.path())
+        .args(["doctor", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stores: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(stores[0]["duplicate_ids"], 1);
+    assert_eq!(stores[1]["duplicate_ids"], 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn round4_git_fifo_is_killed_reaped_and_warned() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    fs::create_dir(&repo).unwrap();
+    common::git(&repo, &["init", "-q"]);
+    fs::remove_file(repo.join(".git/HEAD")).unwrap();
+    fifo(&repo.join(".git/HEAD"));
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--ignored", "--exact", "round4_git_fifo_probe"])
+        .env("SBOARD_TEST_FIFO_REPO", &repo);
+    let output = bounded_output(command);
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "run in isolation by round4_git_fifo_is_killed_reaped_and_warned"]
+fn round4_git_fifo_probe() {
+    let repo = std::path::PathBuf::from(std::env::var_os("SBOARD_TEST_FIFO_REPO").unwrap());
+    let started = std::time::Instant::now();
+    let mut roots = session_board::project::ProjectRoots::default();
+    assert_eq!(roots.resolve(&repo), repo);
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    assert!(
+        roots
+            .take_warnings()
+            .iter()
+            .any(|w| w.contains("timed out"))
+    );
+    let output = Command::new("pgrep")
+        .args(["-P", &std::process::id().to_string(), "git"])
+        .output()
+        .unwrap();
+    assert!(output.stdout.is_empty(), "git child survived: {output:?}");
+}

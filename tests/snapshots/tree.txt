@@ -6,14 +6,15 @@
 │    ◐ claude_code  1m  User placeholder              ││Last user:                                 │
 │    ● claude_code  1m  User placeholder              ││User placeholder                           │
 │    ✓ codex        1m  Title placeholder             ││                                           │
-│    ✕ codex        1m  User placeholder              ││Last assistant:                            │
-│    ○ codex        1m  User placeholder              ││Assistant placeholder                      │
+│    ✕ codex        1m  User placeholder              ││                                           │
+│    ○ codex        1m  User placeholder              ││                                           │
 │    ◐ codex        1m  User placeholder              ││                                           │
-│    ● codex        1m  User placeholder              ││Resume:                                    │
-│    ✕ claude_code 40m  User placeholder              ││claude --resume done                       │
+│    ● codex        1m  User placeholder              ││                                           │
+│    ✕ claude_code 40m  User placeholder              ││                                           │
 │    ✕ codex       40m  User placeholder              ││                                           │
 │    ○ claude_code  1h  User placeholder              ││                                           │
-│    ○ codex        1h  User placeholder              ││                                           │
+│    ○ codex        1h  User placeholder              ││Last assistant:                            │
+│                                                     ││Assistant placeholder                      │
 │                                                     ││                                           │
 │                                                     ││                                           │
 │                                                     ││                                           │
@@ -22,9 +23,8 @@
 │                                                     ││                                           │
 │                                                     ││                                           │
 │                                                     ││                                           │
-│                                                     ││                                           │
-│                                                     ││                                           │
-│                                                     ││                                           │
+│                                                     ││Resume:                                    │
+│                                                     ││claude --resume done                       │
 │                                                     ││                                           │
 └─────────────────────────────────────────────────────┘└───────────────────────────────────────────┘
-1 projects | ? help · r rescan · q quit
+1 projects                                                                ? help · r rescan · q quit
