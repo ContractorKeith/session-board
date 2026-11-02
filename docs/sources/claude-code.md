@@ -20,13 +20,15 @@ cwds inside `.git` to the project. IDs are `claude_code:<native-id>`; native IDs
 as titles, and an empty cleaned ID skips/counts the session. Resume hints use the
 cleaned native ID, avoiding terminal injection and cross-agent read-mark collisions.
 
-Read 256 KiB of head and 64 KiB of tail. Complete head lines supply metadata and
-first prompt; tail records supply current activity/status. A tail starting on a
-line boundary retains its first line. Otherwise scan backwards in 64 KiB steps to
-the preceding newline (or head end), including the crossing record even if complete
-ignored records follow it. Scan/read size is capped at 64 MiB. If no complete tail
-record is available, retain the bounded head-end-to-EOF fallback. Beyond the cap,
-skip and count the session with a reason. Sampled malformed/truncated/invalid-UTF-8
+Read 256 KiB of head and a nominal 64 KiB tail, aligned to complete records,
+including the record crossing the nominal boundary. When the tail has no meaningful
+activity, extend backwards in 64 KiB steps until activity is found or the head is
+reached. Alignment and recovery share a hard 1 MiB total tail cap. At the cap,
+retain the source's fallback status and report one skipped line plus a path-specific
+`1 MiB tail cap` warning in doctor. Never parse the left seam fragment. Oversized
+unrecoverable transcripts beyond the old 64 MiB fallback threshold still skip
+the session with a reason, without reading that middle.
+Sampled malformed/truncated/invalid-UTF-8
 records count as skipped lines; seam fragments do not. Empty/unreadable or invalid
 sessions increment skipped sessions. Missing/unreadable stores increment skipped
 stores. Omitted middle records are not validated. Doctor scans all ages and gives
@@ -80,3 +82,8 @@ fields must contain ASCII digits, including year/month/day and offset fields.
 
 Retained last user and assistant text is capped at the latest 8 KiB each,
 on a UTF-8 boundary. Status derivation still sees the full sampled text.
+
+Issue #118 fixtures in `fixtures/tail-sampling/` and `tests/tail_sampling.rs` cover
+completed turns hidden behind large ignored records, small transcripts, recovery
+to the head and the 1 MiB cap. The ignored release performance test scans 10,000
+fixture-shaped Claude sessions through the public Source seam.
