@@ -30,7 +30,8 @@ sort projects by pin and activity, sessions by activity. No read mark still mean
 unread in M1; first-run semantics remain M4's decision (#16). IDs include the agent
 prefix. With no enabled implemented store found, list emits its tree and exits 2;
 a found but empty store succeeds. Doctor is diagnostic and succeeds with missing
-stores. Broken output pipes exit 0.
+stores; `doctor --json` returns `{ "stores": [...], "tmux": "..." }`, distinguishing
+the tmux version, no server, and a missing executable. Broken output pipes exit 0.
 
 
 State: `~/.local/state/sboard/state.toml` (override `SBOARD_STATE_DIR`). Config:

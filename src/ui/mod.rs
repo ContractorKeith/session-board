@@ -38,6 +38,7 @@ pub struct App {
     pub selected: usize,
     pub help: bool,
     pub message: String,
+    pub summary: String,
     pub color: bool,
     pub list: RefCell<ratatui::widgets::ListState>,
     pub page_size: Cell<usize>,
@@ -60,7 +61,8 @@ impl App {
             folded: HashSet::new(),
             selected: 0,
             help: false,
-            message: "scanning…".into(),
+            message: String::new(),
+            summary: "scanning…".into(),
             color,
             list: RefCell::new(ratatui::widgets::ListState::default()),
             page_size: Cell::new(10),
@@ -75,6 +77,7 @@ impl App {
     ) -> io::Result<T> {
         restore();
         let result = f();
+        session_board::launch::restore_terminal();
         terminal::enable_raw_mode()?;
         execute!(io::stdout(), EnterAlternateScreen)?;
         execute!(
@@ -177,7 +180,7 @@ impl App {
             KeyCode::Char('n') => return Action::New,
             KeyCode::Char('w') => return Action::Worktree,
             KeyCode::Char('r') => {
-                self.message = "scanning…".into();
+                self.summary = "scanning…".into();
                 return Action::Rescan;
             }
             _ => {}
@@ -185,14 +188,19 @@ impl App {
         Action::None
     }
     pub fn status_text(&self) -> String {
+        let message = if self.message.is_empty() {
+            &self.summary
+        } else {
+            &self.message
+        };
         let warnings: Vec<_> = self
             .watch_warnings
             .iter()
             .chain(&self.scan_warnings)
             .collect();
         match warnings.first() {
-            Some(first) => format!("{} | {} warnings: {first}", self.message, warnings.len()),
-            None => self.message.clone(),
+            Some(first) => format!("{} | {} warnings: {first}", message, warnings.len()),
+            None => message.clone(),
         }
     }
     pub fn request_scan(&mut self, scans: &Scans) {
@@ -233,6 +241,7 @@ impl Drop for TerminalGuard {
 }
 fn restore() {
     let _ = terminal::disable_raw_mode();
+    session_board::launch::restore_terminal();
     let _ = execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
 }
 pub fn color_enabled(value: Option<&std::ffi::OsStr>) -> bool {
@@ -279,6 +288,7 @@ pub fn run() -> io::Result<i32> {
 pub(crate) fn terminal_session(
     operation: impl FnOnce(&mut DefaultTerminal) -> io::Result<()>,
 ) -> io::Result<()> {
+    session_board::launch::capture_terminal()?;
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if std::thread::current().name() == Some("main") {
@@ -300,6 +310,26 @@ fn event_loop(
     scans: &Scans,
     signal: &AtomicUsize,
 ) -> io::Result<()> {
+    // Crossterm 0.29 can spin internally on tty EOF/EIO; keep signals and tty
+    // closure observable on main, with no outstanding read while a child runs.
+    let (poll, requests) = std::sync::mpsc::channel();
+    let (events, input) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        while requests.recv().is_ok() {
+            let result = event::poll(Duration::from_millis(50)).and_then(|ready| {
+                if ready {
+                    event::read().map(Some)
+                } else {
+                    Ok(None)
+                }
+            });
+            let failed = result.is_err();
+            if events.send(result).is_err() || failed {
+                break;
+            }
+        }
+    });
+    let mut pending = false;
     let mut open = open::Open::default();
     let mut dirty = true;
     let mut worker_dead = false;
@@ -307,6 +337,9 @@ fn event_loop(
     loop {
         if signal.load(Ordering::Relaxed) != 0 {
             return Ok(());
+        }
+        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+            return Err(io::Error::other("terminal closed"));
         }
         while let Ok(warnings) = scans.status.try_recv() {
             app.watch_warnings = warnings;
@@ -316,7 +349,7 @@ fn event_loop(
             let result = match scans.results.try_recv() {
                 Ok(result) => result,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) if !worker_dead => {
-                    app.message = "scan worker died; restart sboard".into();
+                    app.summary = "scan worker died; restart sboard".into();
                     app.scan_warnings.clear();
                     worker_dead = true;
                     dirty = true;
@@ -326,7 +359,7 @@ fn event_loop(
             };
             match result {
                 Ok(result) => {
-                    app.message = format!("{} projects", result.projects.len());
+                    app.summary = format!("{} projects", result.projects.len());
                     app.scan_warnings = result.warnings;
                     app.replace(result.projects);
                 }
@@ -335,7 +368,7 @@ fn event_loop(
                     // Reset the fullscreen buffers without querying the cursor position.
                     terminal.resize(terminal.size()?.into())?;
                     app.scan_warnings.clear();
-                    app.message = format!("scan: {error}");
+                    app.summary = format!("scan: {error}");
                 }
             }
             dirty = true;
@@ -355,25 +388,43 @@ fn event_loop(
             terminal.draw(|frame| app.render(frame, now))?;
             dirty = false;
         }
-        // Bounded input wait also bounds signal and channel response latency.
-        if event::poll(Duration::from_millis(50))? {
-            match event::read()? {
-                Event::Key(key) if key.kind != KeyEventKind::Release => {
-                    if open.key(app, key, terminal)? {
-                        dirty = true;
-                        continue;
-                    }
+        // One outstanding read: the reader waits while a child owns the terminal.
+        if !pending {
+            poll.send(())
+                .map_err(|_| io::Error::other("terminal reader stopped"))?;
+            pending = true;
+        }
+        let event = match input.recv_timeout(Duration::from_millis(50)) {
+            Ok(result) => {
+                pending = false;
+                result?
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(_) => return Err(io::Error::other("terminal reader stopped")),
+        };
+        match event {
+            Some(Event::Key(key)) if key.kind != KeyEventKind::Release => {
+                app.message.clear();
+                if !open.key(app, key, terminal)? {
                     match app.key(key) {
                         Action::Quit => return Ok(()),
                         Action::Rescan => app.request_scan(scans),
                         Action::None => {}
                         action => open.action(app, action, terminal)?,
                     }
-                    dirty = true;
                 }
-                Event::Resize(_, _) => dirty = true,
-                _ => {}
+                if session_board::launch::take_child_interrupt() {
+                    let _ = signal.compare_exchange(
+                        signal_hook::consts::SIGINT as usize,
+                        0,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    );
+                }
+                dirty = true;
             }
+            Some(Event::Resize(_, _)) => dirty = true,
+            _ => {}
         }
     }
 }

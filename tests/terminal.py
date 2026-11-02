@@ -66,10 +66,28 @@ def case(mode):
         (bindir / 'tmux').chmod(0o755)
         (bindir / 'claude').write_text('#!/bin/sh\nstty -a > "$TERMINAL_FLAGS"\nprintf "agent returned\\n"\n')
         (bindir / 'claude').chmod(0o755)
+        if mode in ('termios', 'cli-termios'):
+            (bindir / 'claude').write_text('#!/bin/sh\nstty -a >> "$TERMINAL_FLAGS"\necho END >> "$TERMINAL_FLAGS"\nstty raw -echo\n')
+        if mode in ('child-int', 'cli-int', 'cli-open-int'):
+            (bindir / 'claude').write_text('#!/bin/sh\ntrap "echo trapped > \"$INT_FILE\"" INT\necho ready > "$READY_FILE"\n(trap "" INT; sleep 3)\necho finished > "$FINISHED_FILE"\n')
+        if mode in ('stale-pane', 'socket-mismatch', 'vanished-pane'):
+            (bindir / 'tmux').write_text('#!/bin/sh\nif [ "$1" = -S ] || [ "$1" = -L ]; then shift 2; fi\nif [ "$1" = list-panes ]; then [ -f "$PANES" ] && cat "$PANES"; elif [ "$1" = display ]; then echo %0; else exit 0; fi\n')
+            env['PANES'] = str(root / 'panes')
+        if mode in ('stale-pane', 'vanished-pane'):
+            (root / 'panes').write_text('dev\x1f2\x1f1\x1fclaude\x1f999999999\x1f' + str(root) + '\x1e\n')
+        if mode == 'socket-mismatch':
+            (root / 'config').mkdir()
+            (root / 'config/config.toml').write_text('[tmux]\nsocket = "other"\n')
+        if mode == 'vanished-pane':
+            (bindir / 'tmux').write_text('#!/bin/sh\nif [ "$1" = -S ] || [ "$1" = -L ]; then shift 2; fi\nif [ "$1" = list-panes ]; then cat "$PANES"; elif [ "$1" = display ]; then [ "$3" = -t ] && exit 1; echo %0; else exit 0; fi\n')
+        env['READY_FILE'] = str(root / 'ready')
+        env['FINISHED_FILE'] = str(root / 'finished')
+        env['INT_FILE'] = str(root / 'int')
         env['PATH'] = str(bindir) + os.pathsep + env['PATH']
         env['TERMINAL_FLAGS'] = str(root / 'flags')
         env.pop('TMUX', None)
-        if mode in ('resume', 'launch'):
+        if mode in ('socket-mismatch', 'vanished-pane'): env['TMUX'] = '/fake/live,1,0'
+        if mode in ('resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane'):
             for row in rows:
                 if 'cwd' in row: row['cwd'] = str(root)
             (root / 'claude/projects/project/session.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
@@ -78,6 +96,10 @@ def case(mode):
         env.pop('SBOARD_SCAN_PROBE', None)
         env.pop('SBOARD_TERMINAL_PROBE', None)
         command = [BINARY]
+        if mode in ('cli-int', 'cli-termios'):
+            command += ['new', str(root)]
+        if mode == 'cli-open-int':
+            command += ['open', 'claude_code:done']
         if mode in ('hook', 'error'):
             command = [PROBE, '--ignored', '--exact', 'terminal_probe', '--nocapture']
             env['SBOARD_TERMINAL_PROBE'] = mode
@@ -86,6 +108,8 @@ def case(mode):
             env['SBOARD_SCAN_PROBE'] = 'panic-once'
         pidfile = root / 'pid'
         text = 'echo $$ > ' + shlex.quote(str(pidfile)) + '; exec ' + shlex.join(command)
+        if mode in ('termios', 'cli-termios'):
+            text = 'echo $$ > ' + shlex.quote(str(pidfile)) + '; ' + shlex.join(command) + '; result=$?; stty -a > ' + shlex.quote(str(root / 'exit-flags')) + '; exit "$result"'
         if mode == 'stdin': text += ' < /dev/null'
         typescript = root / 'typescript'
         if sys.platform == 'darwin':
@@ -117,6 +141,21 @@ def case(mode):
                 assert b'sboard: interactive terminal required; run sboard list for script output.' in data
                 print(f'{mode}: refused before alternate screen')
                 return
+            if mode == 'cli-termios':
+                wait_for(lambda: proc.poll() is not None, 'CLI did not return after raw child')
+                flags = (root / 'exit-flags').read_text()
+                for flag in ('icanon', 'echo', 'icrnl'):
+                    assert re.search(r'(?<!-)\b' + flag + r'\b', flags), flags
+                return
+            if mode in ('cli-int', 'cli-open-int'):
+                wait_for(lambda: (root / 'ready').exists(), 'CLI child not ready')
+                os.write(master, b'\x03')
+                until = time.monotonic() + .4
+                while time.monotonic() < until: pump()
+                assert proc.poll() is None, 'CLI parent died on child Ctrl-C'
+                wait_for(lambda: proc.poll() is not None, 'CLI failed to wait for child')
+                assert (root / 'finished').exists(), 'CLI orphaned child'
+                return
             wait_for(lambda: b'Projects' in output, 'no initial frame')
             pid = int(pidfile.read_text())
             if mode == 'scan-panic':
@@ -132,6 +171,47 @@ def case(mode):
                 wait_for(lambda: 'unwatched: codex' in screen(output), 'missing root not reported')
                 (root / 'codex/sessions').mkdir()
                 wait_for(lambda: 'unwatched:' not in screen(output) and '1 projects' in screen(output), 'reattached root remained unwatched')
+                os.write(master, b'q')
+            elif mode == 'socket-mismatch':
+                wait_for(lambda: '1 projects' in screen(output), 'initial scan did not arrive')
+                os.write(master, b'n')
+                wait_for(lambda: 'Agent: c claude_code' in screen(output), 'no prompt')
+                os.write(master, b'c')
+                wait_for(lambda: 'using TMUX socket' in screen(output), 'socket mismatch not reported')
+                os.write(master, b'q')
+            elif mode in ('stale-pane', 'vanished-pane'):
+                wait_for(lambda: '1 projects' in screen(output), 'initial scan did not arrive')
+                os.write(master, b'j')
+                wait_for(lambda: 'Pane: dev:2.1' in screen(output), 'initial pane not assigned')
+                if mode == 'stale-pane': (root / 'panes').unlink()
+                os.write(master, b'\r')
+                wait_for(lambda: (root / 'flags').exists() and 'resumed ' in screen(output) and output.count(b'\x1b[?1049h') >= 2, 'Enter did not suspend around stale-pane fallback')
+                os.write(master, b'q')
+            elif mode in ('termios', 'child-int', 'message'):
+                wait_for(lambda: '1 projects' in screen(output), 'initial scan did not arrive')
+                for child in range(2 if mode == 'termios' else 1):
+                    os.write(master, b'n')
+                    wait_for(lambda: 'Agent: c claude_code' in screen(output), 'no prompt')
+                    before = output.count(b'\x1b[?1049h')
+                    os.write(master, b'c')
+                    if mode == 'child-int':
+                        wait_for(lambda: (root / 'ready').exists(), 'child not ready')
+                        os.write(master, b'\x03')
+                    wait_for(lambda: output.count(b'\x1b[?1049h') > before and 'launched ' in screen(output), 'board did not return after child')
+                if mode in ('termios', 'cli-termios'):
+                    for flags in (root / 'flags').read_text().split('END')[:-1]:
+                        for flag in ('icanon', 'echo', 'icrnl'):
+                            assert re.search(r'(?<!-)\b' + flag + r'\b', flags), flags
+                if mode == 'child-int':
+                    assert (root / 'int').exists(), 'child never received Ctrl-C'
+                    assert proc.poll() is None, 'board exited on child Ctrl-C'
+                if mode == 'message':
+                    (root / 'claude/projects/project/session.jsonl').write_text((root / 'claude/projects/project/session.jsonl').read_text() + '\n')
+                    until = time.monotonic() + 3.5
+                    while time.monotonic() < until: pump()
+                    assert 'launched ' in screen(output), 'scan overwrote outcome'
+                    os.write(master, b'j')
+                    wait_for(lambda: 'launched ' not in screen(output), 'next key did not clear outcome')
                 os.write(master, b'q')
             elif mode in ('resume', 'launch'):
                 wait_for(lambda: '1 projects' in screen(output), 'initial scan did not arrive')
@@ -162,6 +242,10 @@ def case(mode):
             wait_for(lambda: proc.poll() is not None, 'process failed to exit')
             while select.select([master], [], [], .02)[0]:
                 output += os.read(master, 65536)
+            if mode in ('termios', 'cli-termios'):
+                flags = (root / 'exit-flags').read_text()
+                for flag in ('icanon', 'echo', 'icrnl'):
+                    assert re.search(r'(?<!-)\b' + flag + r'\b', flags), flags
             data = typescript.read_bytes()
             frame = data.index(b'Projects')
             assert b'\x1b[?1049l' in data[frame:], f'{mode}: alternate screen not restored'
@@ -180,5 +264,5 @@ def case(mode):
             os.close(master)
             os.close(slave)
 
-for mode in ([os.environ['SBOARD_PTY_CASE']] if 'SBOARD_PTY_CASE' in os.environ else ['TERM'] if PROBE is None else ['TERM', 'INT', 'HUP', 'q', 'scan-panic', 'error', 'hook', 'dumb', 'stdin', 'idle', 'color-empty', 'color-off', 'unwatched', 'resume', 'launch']):
+for mode in ([os.environ['SBOARD_PTY_CASE']] if 'SBOARD_PTY_CASE' in os.environ else ['TERM'] if PROBE is None else ['TERM', 'INT', 'HUP', 'q', 'scan-panic', 'error', 'hook', 'dumb', 'stdin', 'idle', 'color-empty', 'color-off', 'unwatched', 'resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'cli-termios']):
     case(mode)

@@ -166,19 +166,16 @@ pub fn doctor(out: &mut impl Write, home: &Path, json: bool) -> io::Result<()> {
         store.warnings = result.warnings;
         store.warnings.extend(result.status_reasons);
     }
+    let (config, _) = crate::config::Config::load(&crate::config::Config::path()?)?;
+    let tmux = crate::tmux::doctor(&config.tmux.socket);
     if json {
-        writeln!(out, "{}", serde_json::to_string_pretty(&stores)?)?;
-    } else {
-        let (config, _) = crate::config::Config::load(&crate::config::Config::path()?)?;
         writeln!(
             out,
-            "tmux: {}",
-            if crate::tmux::discover(&config.tmux.socket).is_empty() {
-                "absent (no reachable panes)"
-            } else {
-                "reachable"
-            }
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "stores": stores, "tmux": tmux }))?
         )?;
+    } else {
+        writeln!(out, "tmux: {tmux}")?;
         for store in stores {
             writeln!(
                 out,

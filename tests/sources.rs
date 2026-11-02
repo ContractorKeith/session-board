@@ -217,9 +217,9 @@ fn cli_overrides_doctor_counts_and_regular_file_store() {
     assert!(output.status.success());
     let stores: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     for i in 0..2 {
-        assert_eq!(stores[i]["sessions"], 7);
-        assert_eq!(stores[i]["skipped_lines"], 1);
-        assert_eq!(stores[i]["skipped_stores"], 0);
+        assert_eq!(stores["stores"][i]["sessions"], 7);
+        assert_eq!(stores["stores"][i]["skipped_lines"], 1);
+        assert_eq!(stores["stores"][i]["skipped_stores"], 0);
     }
     let output = command(temp.path())
         .args([

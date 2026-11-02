@@ -97,23 +97,23 @@ impl Open {
     ) -> io::Result<()> {
         match action {
             Action::Open => {
-                let Some(session) = app.session().cloned() else {
+                let Some(mut session) = app.session().cloned() else {
                     app.message = "select a session to open".into();
                     return Ok(());
                 };
                 let result = (|| {
                     let (config, _) = Config::load(&Config::path()?)?;
+                    app.scan_warnings
+                        .extend(tmux::refresh(&mut app.projects, &config.tmux.socket));
+                    session = app.session().cloned().unwrap_or(session);
                     if session.pane.is_none() {
                         // Validate before leaving the TUI.
                         launch::resume_command(&session)?;
                         app.message = format!("no pane; resuming in {}", session.cwd.display());
                         terminal.draw(|f| app.render(f, 0))?;
                     }
-                    if session.pane.is_none() || !tmux::inside() {
-                        app.suspend(terminal, || launch::open(&session, &config.tmux.socket))
-                    } else {
-                        launch::open(&session, &config.tmux.socket)
-                    }
+                    // A pane can vanish after discovery; fallback resume needs suspension too.
+                    app.suspend(terminal, || launch::open(&session, &config.tmux.socket))
                 })();
                 app.message = result.unwrap_or_else(|e| e.to_string());
             }

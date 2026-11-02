@@ -356,7 +356,7 @@ fn doctor_reports_known_paths_and_missing_stores() {
         .unwrap();
     assert!(output.status.success());
     let stores: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let stores = stores.as_array().unwrap();
+    let stores = stores["stores"].as_array().unwrap();
     assert_eq!(stores.len(), 4);
     for (store, agent, suffix, exists) in [
         (&stores[0], "claude_code", ".claude/projects", true),
