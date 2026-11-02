@@ -75,7 +75,11 @@ fn result(error: bool) -> Value {
 fn command(temp: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sboard"));
     common::no_tmux(&mut cmd, temp);
-    cmd.env("SBOARD_STATE_DIR", temp.join("state"))
+    cmd.env("HOME", temp)
+        .env_remove("GROK_HOME")
+        .env_remove("OPENCODE_DB")
+        .env_remove("XDG_DATA_HOME")
+        .env("SBOARD_STATE_DIR", temp.join("state"))
         .env("SBOARD_CONFIG_DIR", temp.join("config"))
         .env("CLAUDE_CONFIG_DIR", temp.join("claude"))
         .env("CODEX_HOME", temp.join("codex"));
@@ -327,15 +331,19 @@ fn issue29_thinking_only_ended_turn_does_not_reuse_previous_question() {
     );
 }
 #[test]
-fn issue31_unimplemented_agents_and_no_store_diagnostics() {
+fn issue31_agent_filters_and_no_store_diagnostics() {
     let temp = tempfile::tempdir().unwrap();
     for agent in ["grok", "opencode"] {
         let out = command(temp.path())
             .args(["list", "--agent", agent])
             .output()
             .unwrap();
-        assert_eq!(out.status.code(), Some(1));
-        assert!(String::from_utf8(out.stderr).unwrap().contains("M6"));
+        assert_eq!(out.status.code(), Some(2));
+        assert!(
+            String::from_utf8(out.stderr)
+                .unwrap()
+                .contains("no enabled stores found")
+        );
     }
     fs::create_dir(temp.path().join("config")).unwrap();
     fs::write(

@@ -9,9 +9,10 @@ MIT. "Done" for v1 is every row marked v1 in `docs/PLAN.md` §4 passing the acce
 §10 on Omarchy, the Mac Studio and GitHub Actions.
 
 ## Status
-M4 in review — 2026-11-01: persisted pins, tags, read marks, project/session archive,
-activity/attention sorting and tag grouping, with first-run unread and merged atomic saves.
-M0–M3 and M5 merged.
+M6 in review — read-only Grok and OpenCode SQLite sources, fixture coverage,
+resume hints and doctor counts. OpenCode is fixture-only, unverified live.
+M0–M5 merged, including persisted state, attention and desktop notifications.
+
 
 ## Commands
 ```bash

@@ -39,26 +39,26 @@ pub struct Outcome {
 }
 
 pub fn run(roots: &mut ProjectRoots, options: &Options) -> io::Result<Outcome> {
-    if matches!(
-        options.agent,
-        Some(AgentFilter::Grok | AgentFilter::Opencode)
-    ) {
-        return Err(io::Error::other(
-            "Grok and OpenCode sources are not implemented until M6; use claude_code or codex",
-        ));
-    }
     let home = cli::home()?;
     let (mut config, mut warnings) = Config::load(&Config::path()?)?;
     let (mut state, state_warnings) = State::load(&State::path()?)?;
     warnings.extend(state_warnings);
     warnings.extend(State::cleanup(&State::path()?));
     warnings.extend(normalize_settings(&mut config, &mut state, &home));
+    let selected = options.agent.map(|agent| match agent {
+        AgentFilter::ClaudeCode => "claude_code",
+        AgentFilter::Codex => "codex",
+        AgentFilter::Grok => "grok",
+        AgentFilter::Opencode => "opencode",
+    });
     let disabled = [
         (!config.agents.claude_code, "claude_code"),
         (!config.agents.codex, "codex"),
+        (!config.agents.grok, "grok"),
+        (!config.agents.opencode, "opencode"),
     ]
     .into_iter()
-    .filter_map(|(off, name)| off.then_some(name))
+    .filter_map(|(off, name)| (off && selected.is_none_or(|s| s == name)).then_some(name))
     .collect::<Vec<_>>();
     if options.all {
         config.window_days = u32::MAX;
@@ -66,12 +66,29 @@ pub fn run(roots: &mut ProjectRoots, options: &Options) -> io::Result<Outcome> {
     if let Some(agent) = options.agent {
         config.agents.claude_code &= agent.agent() == crate::model::Agent::ClaudeCode;
         config.agents.codex &= agent.agent() == crate::model::Agent::Codex;
+        config.agents.grok &= agent.agent() == crate::model::Agent::Grok;
+        config.agents.opencode &= agent.agent() == crate::model::Agent::Opencode;
     }
     let stores = cli::stores(&home);
-    let missing =
-        !(config.agents.claude_code && stores[0].exists || config.agents.codex && stores[1].exists);
+    let missing = !(config.agents.claude_code && stores[0].exists
+        || config.agents.codex && stores[1].exists
+        || config.agents.grok && stores[2].exists
+        || config.agents.opencode && stores[3].exists);
     if missing {
-        warnings.push(format!("no enabled stores found; looked for claude_code at {} and codex at {}; disabled by config: {}", stores[0].path.display(), stores[1].path.display(), if disabled.is_empty() { "none".into() } else { disabled.join(", ") }));
+        let looked_for = stores
+            .iter()
+            .filter(|s| selected.is_none_or(|name| name == s.agent))
+            .map(|s| format!("{} at {}", s.agent, s.path.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        warnings.push(format!(
+            "no enabled stores found; looked for {looked_for}; disabled by config: {}",
+            if disabled.is_empty() {
+                "none".into()
+            } else {
+                disabled.join(", ")
+            }
+        ));
     }
     let project = options
         .project

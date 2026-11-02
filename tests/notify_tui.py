@@ -19,7 +19,7 @@ for mode in ([sys.argv[2]] if len(sys.argv) > 2 else ('slow', 'disabled', 'fail'
     stage = 'setup'
     with deadline(lambda: f'tui_notifications_use_real_scan_events_and_config_without_blocking_help [{mode}]: waiting for {stage}'), tempfile.TemporaryDirectory() as scratch, tempfile.TemporaryFile() as errors_file:
         root = Path(scratch)
-        for directory in ('claude/projects/project', 'codex/sessions', 'config', 'bin'):
+        for directory in ('claude/projects/project', 'codex/sessions', '.grok/sessions', '.local/share/opencode', 'config', 'bin'):
             (root / directory).mkdir(parents=True)
         (root / 'config/config.toml').write_text('notify = ' + ('false' if mode == 'disabled' else 'true') + '\n')
         if mode in ('archive-session', 'archive-project'):
@@ -48,9 +48,11 @@ for mode in ([sys.argv[2]] if len(sys.argv) > 2 else ('slow', 'disabled', 'fail'
             fake = root / 'bin' / name
             fake.write_text('#!/bin/sh\nprintf "call\\n" >> "$NOTIFY_LOG"\n' + ('read ignored < "$NOTIFY_GATE"\n' if mode == 'slow' else 'exec /bin/sleep 30\n' if mode == 'timeout' else 'exit 1\n' if mode == 'fail' else 'exit 0\n'))
             fake.chmod(0o755)
-        env = dict(os.environ, TERM='xterm-256color', CLAUDE_CONFIG_DIR=str(root / 'claude'),
+        env = dict(os.environ, HOME=str(root), TERM='xterm-256color', CLAUDE_CONFIG_DIR=str(root / 'claude'),
                    CODEX_HOME=str(root / 'codex'), SBOARD_STATE_DIR=str(root / 'state'),
                    SBOARD_CONFIG_DIR=str(root / 'config'), NOTIFY_LOG=str(log), NOTIFY_GATE=str(gate), GIT_ENTERED=str(entered), PATH=str(root / 'bin') + ':' + os.environ['PATH'])
+        for key in ('GROK_HOME', 'OPENCODE_DB', 'XDG_DATA_HOME'):
+            env.pop(key, None)
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 100, 0, 0))
         def controlling_terminal():

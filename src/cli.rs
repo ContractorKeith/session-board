@@ -99,19 +99,12 @@ pub struct Store {
 
 pub fn stores(home: &Path) -> Vec<Store> {
     let (claude, codex) = crate::source::homes(home);
+    let (grok, opencode) = crate::source::database_paths(home);
     [
         ("claude_code", claude.join("projects"), true),
         ("codex", codex.join("sessions"), true),
-        (
-            "grok",
-            home.join(".grok/sessions/session_search.sqlite"),
-            false,
-        ),
-        (
-            "opencode",
-            home.join(".local/share/opencode/opencode.db"),
-            false,
-        ),
+        ("grok", grok, false),
+        ("opencode", opencode, false),
     ]
     .into_iter()
     .map(|(agent, path, directory)| {
@@ -122,8 +115,12 @@ pub fn stores(home: &Path) -> Vec<Store> {
         };
         let reason = if exists {
             "found"
-        } else if directory && path.exists() {
-            "not a directory"
+        } else if path.exists() {
+            if directory {
+                "not a directory"
+            } else {
+                "not a regular file"
+            }
         } else {
             "missing"
         }
