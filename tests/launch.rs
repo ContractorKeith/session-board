@@ -573,7 +573,9 @@ fn issue53_stale_tmux_launches_in_place() {
 #[test]
 fn issue46_tmux_launch_escapes_formats_resolves_executable_and_forwards_stores() {
     let s = Sandbox::new();
-    let cwd = s.path("evil#(touch PWNED)");
+    let alias = s.path("alias");
+    std::os::unix::fs::symlink(s.temp.path(), &alias).unwrap();
+    let cwd = alias.join("evil#(touch PWNED)");
     fs::create_dir(&cwd).unwrap();
     success(
         s.cmd()
@@ -587,7 +589,11 @@ fn issue46_tmux_launch_escapes_formats_resolves_executable_and_forwards_stores()
     assert!(
         calls.contains(&format!(
             "-c\n{}\n",
-            cwd.to_str().unwrap().replace('#', "##")
+            cwd.canonicalize()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .replace('#', "##")
         )),
         "{calls}"
     );
