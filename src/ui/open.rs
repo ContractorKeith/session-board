@@ -139,11 +139,25 @@ impl Open {
                     app.message = "select a session to open".into();
                     return Ok(());
                 };
+                app.mark_selected(false);
                 let result = (|| {
                     let (config, _) = Config::load(&Config::path()?)?;
-                    app.scan_warnings
-                        .extend(tmux::refresh(&mut app.projects, &config.tmux.socket));
-                    session = app.session().cloned().unwrap_or(session);
+                    app.scan_warnings.extend(tmux::refresh(
+                        &mut app.organize.projects,
+                        &config.tmux.socket,
+                    ));
+                    app.project_organization();
+                    // Read marks can shrink the queue; keep the original open target.
+                    session = app
+                        .organize
+                        .projects
+                        .iter()
+                        .flat_map(|p| &p.sessions)
+                        .find(|s| {
+                            s.id == session.id && s.transcript_path == session.transcript_path
+                        })
+                        .cloned()
+                        .unwrap_or(session);
                     if session.pane.is_none() {
                         // Validate before leaving the TUI.
                         launch::resume_command(&session)?;

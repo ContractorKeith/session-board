@@ -55,7 +55,7 @@ def case(mode):
         root = Path(tmp)
         (root / 'claude/projects/project').mkdir(parents=True)
         (root / 'codex/sessions').mkdir(parents=True)
-        fixture = 'waiting' if mode == 'attention-resume' else 'done'
+        fixture = 'waiting' if mode in ('attention-resume', 'attention-fresh-pane', 'attention-collapsed-read') else 'done'
         rows = [json.loads(line) for line in Path(f'fixtures/claude_code/project/{fixture}.jsonl').read_text().splitlines()]
         for row in rows:
             if 'timestamp' in row: row['timestamp'] = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat().replace('+00:00', 'Z')
@@ -94,9 +94,12 @@ def case(mode):
             for row in rows:
                 if 'cwd' in row: row['cwd'] = str(root)
             (root / 'claude/projects/project/session.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
-        if mode == 'attention-resume':
+        if mode in ('attention-resume', 'attention-fresh-pane', 'attention-collapsed-read'):
             (bindir / 'claude').write_text('#!/bin/sh\nstty -a > "$TERMINAL_FLAGS"\nprintf "%s\\n" "$@" > "$ATTENTION_ARGS"\nprintf "agent returned\\n"\n')
             env['ATTENTION_ARGS'] = str(root / 'attention-args')
+        if mode == 'attention-fresh-pane':
+            env['PANES'] = str(root / 'panes')
+            (bindir / 'tmux').write_text('#!/bin/sh\nif [ "$1" = -S ] || [ "$1" = -L ]; then shift 2; fi\nif [ "$1" = list-panes ]; then [ -f "$PANES" ] && cat "$PANES"; elif [ "$1" = display ]; then echo %0; else exit 0; fi\n')
         env['READY_FILE'] = str(root / 'ready')
         env['FINISHED_FILE'] = str(root / 'finished')
         env['INT_FILE'] = str(root / 'int')
@@ -104,7 +107,7 @@ def case(mode):
         env['TERMINAL_FLAGS'] = str(root / 'flags')
         env.pop('TMUX', None)
         if mode in ('socket-mismatch', 'vanished-pane', 'jump-failure'): env['TMUX'] = '/fake/live,1,0'
-        if mode in ('resume', 'attention-resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure'):
+        if mode in ('resume', 'attention-resume', 'attention-fresh-pane', 'attention-collapsed-read', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure'):
             for row in rows:
                 if 'cwd' in row: row['cwd'] = str(root)
             (root / 'claude/projects/project/session.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
@@ -207,6 +210,30 @@ def case(mode):
                 os.write(master, b'r')
                 wait_for(lambda: '1 projects' in screen(output), 'scan did not recover on r')
                 os.write(master, b'q')
+            elif mode in ('attention-fresh-pane', 'attention-collapsed-read'):
+                wait_for(lambda: '1 projects' in screen(output), 'initial scan missing')
+                if mode == 'attention-fresh-pane':
+                    (root / 'panes').write_text(''.join(str(len(v.encode())) + ':' + v for v in ['dev', '2', '1', 'claude', '999999999', str(root)]) + '\n')
+                    os.write(master, b'\t\r')
+                    wait_for(lambda: 'jumped to ' in screen(output) or (root / 'flags').exists(), 'open did not return')
+                    assert 'jumped to ' in screen(output), 'attention Enter ignored the freshly discovered pane'
+                    assert not (root / 'flags').exists(), 'attention Enter resumed instead of jumping'
+                else:
+                    os.write(master, b'h\th')
+                    wait_for(lambda: 'l to expand' in screen(output), 'attention did not collapse')
+                    advanced = datetime.now(timezone.utc) - timedelta(seconds=30)
+                    for row in rows:
+                        if 'timestamp' in row: row['timestamp'] = advanced.isoformat().replace('+00:00', 'Z')
+                    (root / 'claude/projects/project/session.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
+                    wait_for(lambda: '•1' in screen(output), 'collapsed selection update did not become unread')
+                    os.write(master, b'\r')
+                    wait_for(lambda: 'resumed ' in screen(output), 'collapsed attention Enter did not resume')
+                    assert (root / 'attention-args').read_text().splitlines() == ['--resume=waiting']
+                os.write(master, b'q')
+                if mode == 'attention-collapsed-read':
+                    wait_for(lambda: proc.poll() is not None, 'quit did not flush read mark')
+                    saved = tomllib.loads((root / 'state/state.toml').read_text())
+                    assert saved['read']['claude_code:waiting'] >= int(advanced.timestamp()), 'attention Enter did not mark the opened activity read'
             elif mode == 'escape-sequence-prefix':
                 wait_for(lambda: '1 projects' in screen(output), 'initial scan did not arrive')
                 for tail in (b'\x1b[200~a\x1b[201~', b'\x1b[200~p\x1b[201~', b'\x1b[200~q\x1b[201~', b'\x1b[A', b'\x1bOA'):
@@ -469,5 +496,5 @@ def case(mode):
 if __name__ == '__main__':
     BINARY = str(Path(sys.argv[1]).resolve())
     PROBE = str(Path(sys.argv[2]).resolve()) if len(sys.argv) > 2 else None
-    for mode in ([os.environ['SBOARD_PTY_CASE']] if 'SBOARD_PTY_CASE' in os.environ else ['TERM'] if PROBE is None else ['TERM', 'INT', 'HUP', 'q', 'scan-panic', 'error', 'hook', 'dumb', 'stdin', 'idle', 'color-empty', 'color-off', 'unwatched', 'resume', 'attention-resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure', 'cli-termios', 'paste', 'paste-injection', 'typeahead', 'paste-long', 'paste-lock', 'escape-1', 'escape-20', 'escape-40', 'escape-bytewise', 'escape-bytewise-50', 'escape-alt', 'escape-alt-board', 'escape-alone', 'paste-timeout', 'paste-handoff', 'paste-nested', 'decoder-keys', 'escape-sequence-prefix']):
+    for mode in ([os.environ['SBOARD_PTY_CASE']] if 'SBOARD_PTY_CASE' in os.environ else ['TERM'] if PROBE is None else ['TERM', 'INT', 'HUP', 'q', 'scan-panic', 'error', 'hook', 'dumb', 'stdin', 'idle', 'color-empty', 'color-off', 'unwatched', 'resume', 'attention-resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure', 'cli-termios', 'paste', 'paste-injection', 'typeahead', 'paste-long', 'paste-lock', 'escape-1', 'escape-20', 'escape-40', 'escape-bytewise', 'escape-bytewise-50', 'escape-alt', 'escape-alt-board', 'escape-alone', 'paste-timeout', 'paste-handoff', 'paste-nested', 'decoder-keys', 'escape-sequence-prefix', 'attention-fresh-pane', 'attention-collapsed-read']):
         case(mode)
