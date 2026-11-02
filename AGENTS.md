@@ -9,9 +9,8 @@ MIT. "Done" for v1 is every row marked v1 in `docs/PLAN.md` §4 passing the acce
 §10 on Omarchy, the Mac Studio and GitHub Actions.
 
 ## Status
-v0.1.0 release candidate — release workflow, binaries and install notes; acceptance in M7 (#8).
-M0–M6 merged. OpenCode is fixture-only, unverified live.
-Keith tags the release after M7 merges.
+v0.1.0 release candidate — M0–M7 merged, including release workflow and install notes.
+OpenCode is fixture-only, unverified live. Final release review precedes Keith's v0.1.0 tag.
 
 
 ## Commands

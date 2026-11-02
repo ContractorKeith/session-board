@@ -1,6 +1,6 @@
 # session-board — Build Plan
 
-Status: v0.1.0 release candidate; acceptance tracked in M7 (#8). Written from Keith's scope note and a read of
+Status: v0.1.0 release candidate; M0–M7 merged, final release review and tag pending. Written from Keith's scope note and a read of
 [agent-deck](https://github.com/asheshgoplani/agent-deck) (Go, MIT, tmux-backed, 1.2k stars),
 [agenthud](https://github.com/neochoon/agenthud) (TypeScript, MIT, read-only HUD) and
 [agent-mux](https://github.com/leonardcser/agent-mux) (Rust, MIT, tmux pane list), with a
