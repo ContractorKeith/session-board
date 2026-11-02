@@ -98,15 +98,16 @@ impl Snapshot {
     fn same_open_target(&self, other: &Self) -> bool {
         self.format == other.format
             && self.database.same_file(&other.database)
-            && self
-                .sidecars
-                .iter()
-                .zip(&other.sidecars)
-                .all(|(before, after)| match (before, after) {
+            && self.sidecars.iter().zip(&other.sidecars).enumerate().all(
+                |(index, (before, after))| match (before, after) {
+                    // A rollback writer may create/remove its journal while
+                    // holding only RESERVED; SQLite decides when reads lock.
+                    _ if self.format == [1, 1] && index == 2 => true,
                     (Some(before), Some(after)) => before.same_file(after),
                     (None, None) => true,
                     _ => false,
-                })
+                },
+            )
     }
 }
 struct Database {
@@ -158,7 +159,8 @@ fn open_with(
         }
     };
     let wal = before.sidecars[0].is_some();
-    let query = if before.format == [2, 2] && !wal {
+    let immutable = before.format == [2, 2] && !wal;
+    let query = if immutable {
         "mode=ro&immutable=1"
     } else {
         "mode=ro"
@@ -200,12 +202,12 @@ fn open_with(
     Some(Database {
         connection,
         path: absolute,
-        stable_snapshot: (!wal).then_some(before),
+        stable_snapshot: immutable.then_some(before),
     })
 }
 
 /// Keep validation around the complete scan so neither source can return a
-/// stale file view after a writer replaces or changes a non-WAL store.
+/// stale immutable view after a writer replaces or changes a closed WAL store.
 pub(super) fn scan(
     path: &Path,
     result: &mut SourceScan,
@@ -265,6 +267,67 @@ pub(super) fn valid_id(id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn issue113_rollback_journal_appearance_and_commit_during_open_are_normal() {
+        for journal_before in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("store.db");
+            let writer = Connection::open(&path).unwrap();
+            writer
+                .execute_batch("CREATE TABLE test(title); INSERT INTO test VALUES ('OLD')")
+                .unwrap();
+            if journal_before {
+                writer
+                    .execute_batch("BEGIN IMMEDIATE; UPDATE test SET title='NEW'")
+                    .unwrap();
+            }
+            let mut result = SourceScan::default();
+            let reader = open_with(&path, &mut result, || {
+                writer
+                    .execute_batch(if journal_before {
+                        "COMMIT"
+                    } else {
+                        "BEGIN IMMEDIATE; UPDATE test SET title='NEW'"
+                    })
+                    .unwrap();
+            });
+            assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+            let reader = reader.unwrap();
+            let title: String = reader
+                .connection
+                .query_row("SELECT title FROM test", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(title, if journal_before { "NEW" } else { "OLD" });
+            drop(reader);
+            if !journal_before {
+                writer.execute_batch("ROLLBACK").unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn issue113_commits_before_first_select_do_not_discard_locked_reads() {
+        for mode in ["DELETE", "MEMORY", "OFF"] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("store.db");
+            let writer = Connection::open(&path).unwrap();
+            writer.execute_batch(&format!("PRAGMA journal_mode={mode}; CREATE TABLE test(title TEXT); INSERT INTO test VALUES ('OLD'),('OLD'),('OLD')")).unwrap();
+            let mut result = SourceScan::default();
+            let mut titles = vec![];
+            scan(&path, &mut result, |connection, _| {
+                writer.execute("UPDATE test SET title='NEW'", [])?;
+                titles = connection
+                    .prepare("SELECT title FROM test")?
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(())
+            });
+            assert_eq!(titles, ["NEW", "NEW", "NEW"], "{mode}");
+            assert_eq!(result.skipped_stores, 0, "{mode}");
+            assert!(result.warnings.is_empty(), "{mode}: {:?}", result.warnings);
+        }
+    }
+
     #[test]
     fn wal_appearing_before_open_discards_immutable_connection() {
         let temp = tempfile::tempdir().unwrap();
@@ -418,13 +481,13 @@ mod tests {
         writer.execute_batch("ROLLBACK").unwrap();
     }
     #[test]
-    fn issue83_database_size_mtime_and_sidecar_changes_are_checked() {
+    fn issue83_immutable_size_mtime_and_sidecar_changes_are_checked() {
         for change in ["size", "mtime", "sidecar"] {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("store.db");
             Connection::open(&path)
                 .unwrap()
-                .execute_batch("CREATE TABLE test(id)")
+                .execute_batch("CREATE TABLE test(id); PRAGMA journal_mode=WAL")
                 .unwrap();
             let mut result = SourceScan::default();
             scan(&path, &mut result, |connection, _| {
@@ -493,9 +556,8 @@ mod tests {
         for replace in [false, true] {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("store.db");
-            let writer = Connection::open(&path).unwrap();
-            writer
-                .execute_batch("CREATE TABLE test(title TEXT); INSERT INTO test VALUES ('OLD')")
+            Connection::open(&path).unwrap()
+                .execute_batch("CREATE TABLE test(title TEXT); INSERT INTO test VALUES ('OLD'); PRAGMA journal_mode=WAL")
                 .unwrap();
             let before = std::fs::metadata(&path).unwrap();
             let mut result = SourceScan::default();
@@ -508,7 +570,7 @@ mod tests {
                     Connection::open(&replacement)
                         .unwrap()
                         .execute_batch(
-                            "CREATE TABLE test(title TEXT); INSERT INTO test VALUES ('NEW')",
+                            "CREATE TABLE test(title TEXT); INSERT INTO test VALUES ('NEW'); PRAGMA journal_mode=WAL",
                         )
                         .unwrap();
                     std::fs::OpenOptions::new()
@@ -521,7 +583,7 @@ mod tests {
                         .unwrap();
                     std::fs::rename(replacement, &path).unwrap();
                 } else {
-                    writer.execute("UPDATE test SET title='NEW'", [])?;
+                    Connection::open(&path)?.execute("UPDATE test SET title='NEW'", [])?;
                     std::fs::OpenOptions::new()
                         .write(true)
                         .open(&path)

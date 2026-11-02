@@ -34,6 +34,8 @@ Only `parent_id IS NULL` owner sessions are read; children are excluded. IDs are
 `opencode:<id>`. Native IDs must match `[A-Za-z0-9._:-]+` without a leading `-`;
 invalid IDs and relative/empty/NUL-bearing `directory` skip/count sessions. Normalize cwd. Start/activity come from
 `session.time_created` / `time_updated`, divided by 1000; negative times skip/count.
+Start or activity values more than one hour ahead of scan time clamp individually
+to now, with one path/session warning; exactly one hour ahead is retained.
 Title uses cleaned `session.title`, falling back to the first user message's text
 (60 characters). Each role's latest message supplies a UTF-8 bounded 8 KiB preview.
 Only `part.data.type = text` contributes prose; ignore reasoning and step parts.
@@ -87,11 +89,12 @@ through the checked immutable path, including while its agent is stopped.
 Before opening, symlink_metadata checks the database and each WAL/SHM/journal
 entry. Existing entries must be regular files: directories, FIFOs, sockets,
 devices and final symlinks (including dangling ones) skip/warn before SQLite.
-The identities/set are rechecked after open and before the first schema read.
-Scans without WAL also compare device/inode, size, nanosecond mtime/ctime, header
-counter/version bytes and sidecar metadata after reading. Normal SQLite locks
-provide transaction isolation for rollback stores; these checks also validate
-immutable closed-WAL views and detect replacement/raw edits.
+The identities/set are rechecked after open and before the first schema read;
+rollback-journal appearance/removal is normal and left to SQLite's locks.
+Only immutable scans compare device/inode, size, nanosecond mtime/ctime, header
+counter/version bytes and sidecar metadata after reading. Normal mode=ro scans
+rely on SQLite locks and keep coherent rows across ordinary commits; the fingerprint
+validates only immutable closed-WAL views and detects replacement/raw edits.
 Normal WAL scans see committed frames. Schema drift fails soft; live verification
 is still required before claiming compatibility with an installed OpenCode version.
 
@@ -130,3 +133,8 @@ Round-5 tests reject pre-existing spilled MEMORY transactions and non-regular
 database/sidecar entries, and stress 20 concurrent lists during WAL commits.
 Relative overrides still follow cwd if the process itself changes it; child
 launches do not change the app's cwd.
+
+`fixtures/opencode/future.sql` extends the base schema with `future`, an open
+assistant whose start/activity times are ten years ahead of the fixed clock.
+`tests/sqlite_round7.rs` checks both clamps, one path/session warning, the exact
+one-hour boundary and independently future start/activity fields.

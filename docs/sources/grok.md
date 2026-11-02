@@ -60,16 +60,23 @@ Before any connection open, `symlink_metadata` checks the database and each
 `-wal`, `-shm`, `-journal` entry. Existing entries must be regular files: FIFO,
 directory, socket, device and all final symlinks (including dangling ones) skip
 the store with one warning. Missing sidecars are normal; a missing database
-counts as skipped without warning. The checks repeat during snapshots.
+counts as skipped without warning. The checks repeat during snapshots. A malicious
+process with write access to the user's agent directory can atomically alternate
+the path between a regular file and FIFO after this check but before SQLite
+opens it, hanging the scan. This
+accepted race requires an adversary writing into the user's own home directory.
 After opening and before the first schema read, database/sidecar identities and
 set must still match or the connection is discarded. The VFS independently
-prevents file creation in the later OS-open window.
+prevents file creation in the later OS-open window. Rollback-journal appearance
+or removal is normal during commits and is left to SQLite's lock/recovery rules.
 
 The common scan wrapper discards partial results on step/I/O/schema errors;
-conversion errors skip/count only the affected row. For stores without a WAL an extra
-before/after fingerprint checks device/inode, size, nanosecond mtime/ctime,
-header bytes 24–27 and 92–99, and sidecar set/metadata. This detects replacement
-or raw file changes, supplementing normal locks or validating the closed-WAL immutable view.
+conversion errors skip/count only the affected row. Only the immutable path uses
+a before/after fingerprint of device/inode, size, nanosecond mtime/ctime, header
+bytes 24–27 and 92–99, and sidecar set/metadata. This detects replacement or raw
+file changes, validating the closed-WAL immutable view. Normal `mode=ro` scans
+rely on SQLite locks; a commit between discovery and SELECT is a healthy old/new
+view and does not discard the store.
 
 ## Fixtures and verification
 
@@ -109,3 +116,11 @@ not 100,000 active previews or a single huge cell. The attack's single 100 MB
 content value peaked near 310 MB RSS inside SQLite despite bounded Rust previews.
 Relative paths are still re-resolved if the process itself changes cwd; current
 launches change only child cwd. Neither weakness has been redesigned here.
+
+Round-7 regressions commit between the fingerprint and first table SELECT in
+DELETE/MEMORY/OFF modes without discarding rows or warning. Immutable-only raw
+size/mtime/sidecar, rewrite/replacement and WAL-appearance checks still apply.
+
+Run `python3 tests/sqlite_delete.py target/release/sboard` for 50 concurrent lists
+per source against DELETE commits. It rejects warnings/discards, permits only the
+writer's temporary journal, checks the final sidecar set and reaps all children.

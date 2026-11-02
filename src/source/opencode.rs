@@ -50,7 +50,21 @@ impl Source for Opencode {
                     result.skipped_sessions += 1;
                     continue;
                 };
-                let last = updated / 1000;
+                let mut started = started / 1000;
+                let mut last = updated / 1000;
+                let limit = self.now.saturating_add(3600);
+                if started > limit || last > limit {
+                    result.warnings.push(format!(
+                        "{} opencode:{id}: timestamp more than one hour in the future; clamped to now",
+                        self.path.display()
+                    ));
+                    if started > limit {
+                        started = self.now;
+                    }
+                    if last > limit {
+                        last = self.now;
+                    }
+                }
                 if self.now.saturating_sub(last) > i64::from(config.window_days) * 86400 {
                     continue;
                 }
@@ -71,7 +85,7 @@ impl Source for Opencode {
                     project_root: cwd.clone(),
                     cwd,
                     title,
-                    started_at: started / 1000,
+                    started_at: started,
                     last_activity_at: last,
                     status,
                     last_user_text: read::preview(&user),
