@@ -1028,3 +1028,17 @@ fn issue121_private_tmux_without_attached_client_never_resumes() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn issue126_ctrl_z_returns_to_shell_and_fg_resumes_agent() {
+    let output = Command::new("python3")
+        .args(["tests/job_control.py", env!("CARGO_BIN_EXE_sboard")])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
