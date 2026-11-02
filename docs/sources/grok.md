@@ -34,12 +34,20 @@ flat index, even when content ends in a question.
 
 ## SQLite access
 
-All on-disk stores use READ_ONLY / NO_MUTEX, `mode=ro`, and a 200 ms busy timeout.
-Never use `immutable=1` or `nolock`: a MEMORY/OFF-journal writer can spill pages
-before any observer snapshot. SQLite's normal SHARED lock excludes those pages;
-a busy/locked store contributes zero sessions, one skipped store and one path
-warning. A hot rollback journal fails read-only rather than being recovered.
-There is no lock-bypassing fallback, including on read-only filesystems.
+Header bytes 18/19 select the rule: WAL format (`2,2`) with WAL uses normal
+`mode=ro`, WAL format without WAL uses `mode=ro&immutable=1` with before/after
+identity/header validation, and rollback format (`1,1`) always uses normal
+`mode=ro` locking. Unreadable/short headers or other version pairs skip with one
+warning. Every connection is READ_ONLY / NO_MUTEX with a 200 ms busy timeout;
+`nolock` is never used.
+
+WAL writers write the main file during checkpoints, which require WAL; a WAL
+appearing before open changes the sidecar set and discards the connection, and
+changes during the immutable scan discard its results. Rollback-format stores
+never use immutable: MEMORY/OFF-journal writers can spill pages before a snapshot,
+so SQLite's normal SHARED lock must exclude them. A busy/locked store contributes
+zero sessions, one skipped store and one path warning. A hot rollback journal
+fails read-only rather than being recovered.
 
 **SHM creation/updates beside an existing WAL are permitted SQLite WAL protocol.
 Creating a WAL or rollback journal is forbidden.** A private VFS removes CREATE,
@@ -47,12 +55,6 @@ EXCLUSIVE and DELETEONCLOSE from WAL/main-journal/super-journal xOpen flags, the
 delegates to SQLite's platform VFS. Removing WAL between a check and the actual
 OS open cannot make the observer recreate it. No cleanup deletes agent files.
 A zero-byte journal beside a rollback-format store is ignored normally.
-
-A checkpointed WAL-format database whose WAL has been removed may need SQLite
-to create a WAL even for a read. The no-create VFS rejects that open: the store is
-found but skipped with a warning until its agent supplies the WAL. This deliberate
-limitation preserves locking and the no-write policy instead of silently reading
-an immutable view of potentially uncommitted pages.
 
 Before any connection open, `symlink_metadata` checks the database and each
 `-wal`, `-shm`, `-journal` entry. Existing entries must be regular files: FIFO,
@@ -64,10 +66,10 @@ set must still match or the connection is discarded. The VFS independently
 prevents file creation in the later OS-open window.
 
 The common scan wrapper discards partial results on step/I/O/schema errors;
-conversion errors skip/count only the affected row. For non-WAL stores an extra
+conversion errors skip/count only the affected row. For stores without a WAL an extra
 before/after fingerprint checks device/inode, size, nanosecond mtime/ctime,
 header bytes 24–27 and 92–99, and sidecar set/metadata. This detects replacement
-or raw file changes, supplementing normal SQLite locks rather than replacing them.
+or raw file changes, supplementing normal locks or validating the closed-WAL immutable view.
 
 ## Fixtures and verification
 
@@ -81,7 +83,7 @@ SQL fixtures are committed and generated only in temp directories. Fixed clock:
 | relative | Relative cwd skipped and counted |
 
 `tests/sqlite_sources.rs` covers base rules, UTF-8 bounds, missing/special/corrupt
-stores, safe skip of a closed WAL-format store without sidecars, doctor/filters,
+stores, reads of a closed WAL-format store without sidecars, doctor/filters,
 and full byte snapshots with the explicit SHM exception.
 `tests/sqlite_round2.rs` covers live committed WAL, spilled locked writes,
 corrupt middle leaves in both sources, conversion failures, validation, titles,
@@ -90,7 +92,8 @@ future/millisecond boundaries, window filtering and transient-sidecar polling.
 NULL timestamp counts, relative overrides and NUL/invalid-UTF-8 byte tails.
 `source::sqlite::tests` covers read-only fd/write oracles, writer races, file/header
 fingerprints and WAL removal before/inside VFS xOpen. A CREATE mutation fails the
-actual-open regression. Post-query MEMORY writers now fail through SQLite locking.
+actual-open regression. Header validation and a WAL appearing before an immutable
+open have regressions too. Post-query MEMORY writers fail through SQLite locking.
 
 `tests/sqlite_round5.rs` keeps a 2,999-insert MEMORY transaction open **before**
 the first snapshot. An independent SQLite process verifies the EXCLUSIVE lock;

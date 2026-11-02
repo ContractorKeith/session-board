@@ -69,24 +69,29 @@ The `permission`, `project`, migrations, model, tokens and agent-owned archive
 fields are unused. sboard owns its own archive.
 
 SQLite uses the shared read-only scan wrapper described in [grok.md](grok.md).
-Every on-disk store uses normal `mode=ro` locking with a 200 ms busy timeout;
-**no immutable or nolock fallback**. A MEMORY/OFF-journal transaction can spill
-before an observer snapshot, so the SHARED lock is required to exclude its pages.
-Busy/locked/hot-journal failures skip the store and warn rather than recover it.
+Header bytes 18/19 select three paths: WAL (`2,2`) with WAL uses `mode=ro`, WAL
+without WAL uses checked `mode=ro&immutable=1`, and rollback (`1,1`) uses normal
+`mode=ro` locks. Short/unreadable headers or other version pairs skip/warn.
+The busy timeout is 200 ms and nolock is never used. Rollback-format stores
+cannot use immutable: a MEMORY/OFF-journal writer can spill before any snapshot,
+so the SHARED lock excludes its pages. Busy/locked/hot-journal failures skip and
+warn rather than recover the store. A closed WAL store can use immutable because
+WAL writers need WAL for checkpoints; sidecar/header/identity checks discard a
+view if a writer or replacement changes it during the scan.
 
 **SHM creation/updates beside an existing WAL are allowed SQLite protocol.
 Creating WAL or journal files is forbidden.** The private VFS enforces no CREATE
-on WAL/journal OS opens. A WAL-format database without its WAL can therefore be
-found but skipped when SQLite would need to create that file; the agent must
-supply it. No immutable fallback is used even for that closed-store case.
+on WAL/journal OS opens. A WAL-format database without its WAL remains readable
+through the checked immutable path, including while its agent is stopped.
 
 Before opening, symlink_metadata checks the database and each WAL/SHM/journal
 entry. Existing entries must be regular files: directories, FIFOs, sockets,
 devices and final symlinks (including dangling ones) skip/warn before SQLite.
 The identities/set are rechecked after open and before the first schema read.
-Non-WAL scans also compare device/inode, size, nanosecond mtime/ctime, header
-counter/version bytes and sidecar metadata after reading. SQLite locks provide
-transaction isolation; these checks supplement it for replacement/raw file edits.
+Scans without WAL also compare device/inode, size, nanosecond mtime/ctime, header
+counter/version bytes and sidecar metadata after reading. Normal SQLite locks
+provide transaction isolation for rollback stores; these checks also validate
+immutable closed-WAL views and detect replacement/raw edits.
 Normal WAL scans see committed frames. Schema drift fails soft; live verification
 is still required before claiming compatibility with an installed OpenCode version.
 

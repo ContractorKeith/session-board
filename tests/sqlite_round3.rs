@@ -87,14 +87,8 @@ fn issue84_stale_empty_journal_never_creates_wal_or_shm() {
         fs::write(sidecar(&path, "-journal"), []).unwrap();
         let before = snapshot(temp.path());
         let scan = grok(&path);
-        if wal_format {
-            assert!(scan.sessions.is_empty());
-            assert_eq!(scan.skipped_stores, 1);
-            assert_eq!(scan.warnings.len(), 1);
-        } else {
-            assert_eq!(scan.sessions.len(), 2);
-            assert!(scan.warnings.is_empty(), "{:?}", scan.warnings);
-        }
+        assert_eq!(scan.sessions.len(), 2);
+        assert!(scan.warnings.is_empty(), "{:?}", scan.warnings);
         assert!(
             snapshot(temp.path()) == before,
             "stale journal caused database/sidecar mutation"

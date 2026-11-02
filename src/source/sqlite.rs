@@ -63,6 +63,7 @@ impl Stamp {
 #[derive(PartialEq, Eq)]
 struct Snapshot {
     database: Stamp,
+    format: [u8; 2],
     // Header change counter (24..28), version-valid-for and SQLite version (92..100).
     header: [u8; 12],
     // WAL, SHM, rollback journal; include identity/ctime as well as size/mtime.
@@ -75,6 +76,10 @@ impl Snapshot {
         let database = Stamp::new(file.metadata()?)?;
         let mut header = [0; 100];
         file.read_exact(&mut header)?;
+        let format = [header[18], header[19]];
+        if !matches!(format, [1, 1] | [2, 2]) {
+            return Err(crate::storage::at(path, "invalid SQLite read/write format"));
+        }
         let mut signals = [0; 12];
         signals[..4].copy_from_slice(&header[24..28]);
         signals[4..].copy_from_slice(&header[92..100]);
@@ -85,12 +90,14 @@ impl Snapshot {
         };
         Ok(Self {
             database,
+            format,
             header: signals,
             sidecars: [sidecar("-wal")?, sidecar("-shm")?, sidecar("-journal")?],
         })
     }
     fn same_open_target(&self, other: &Self) -> bool {
-        self.database.same_file(&other.database)
+        self.format == other.format
+            && self.database.same_file(&other.database)
             && self
                 .sidecars
                 .iter()
@@ -108,7 +115,7 @@ struct Database {
     stable_snapshot: Option<Snapshot>,
 }
 
-/// Normal read-only locking applies to every on-disk store, including MEMORY-journal writers.
+/// Only a WAL-format store without WAL can bypass locks, with snapshot validation.
 fn open(path: &Path, result: &mut SourceScan) -> Option<Database> {
     open_with(path, result, || {})
 }
@@ -151,7 +158,11 @@ fn open_with(
         }
     };
     let wal = before.sidecars[0].is_some();
-    let query = "mode=ro";
+    let query = if before.format == [2, 2] && !wal {
+        "mode=ro&immutable=1"
+    } else {
+        "mode=ro"
+    };
     before_connection();
     let connection = match sqlite_vfs::open(&format!("{uri}?{query}"), flags) {
         Ok(connection) => connection,
@@ -254,6 +265,52 @@ pub(super) fn valid_id(id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn wal_appearing_before_open_discards_immutable_connection() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("store.db");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE TABLE test(id); PRAGMA journal_mode=WAL")
+            .unwrap();
+        let wal = temp.path().join("store.db-wal");
+        assert!(!wal.exists());
+        let mut result = SourceScan::default();
+        let database = open_with(&path, &mut result, || {
+            std::fs::write(&wal, []).unwrap();
+        });
+        assert!(database.is_none());
+        assert_eq!(result.skipped_stores, 1);
+        assert_eq!(result.warnings.len(), 1);
+        assert!(result.warnings[0].contains("changed during open"));
+        assert!(!temp.path().join("store.db-shm").exists());
+        assert!(!temp.path().join("store.db-journal").exists());
+    }
+
+    #[test]
+    fn unreadable_or_invalid_header_format_skips_before_sqlite() {
+        for format in [[0, 0], [3, 3], [1, 2], [2, 1]] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("store.db");
+            let mut header = [0; 100];
+            header[18..20].copy_from_slice(&format);
+            std::fs::write(&path, header).unwrap();
+            let mut result = SourceScan::default();
+            assert!(open(&path, &mut result).is_none());
+            assert_eq!(result.skipped_stores, 1);
+            assert_eq!(result.warnings.len(), 1);
+            assert!(result.warnings[0].contains("invalid SQLite read/write format"));
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("store.db");
+        std::fs::write(&path, [0; 99]).unwrap();
+        let mut result = SourceScan::default();
+        assert!(open(&path, &mut result).is_none());
+        assert_eq!(result.skipped_stores, 1);
+        assert_eq!(result.warnings.len(), 1);
+        assert!(result.warnings[0].contains(path.to_str().unwrap()));
+    }
+
     #[test]
     fn issue68_database_fd_and_sql_writes_are_read_only() {
         let temp = tempfile::tempdir().unwrap();
