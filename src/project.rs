@@ -1,7 +1,12 @@
 use std::{
     collections::HashMap,
     path::{Component, Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 /// Inherited git environment (hooks, `rebase --exec`, editor terminals) would make
@@ -18,11 +23,21 @@ const GIT_ENV: [&str; 6] = [
 #[derive(Default)]
 pub struct ProjectRoots {
     cache: HashMap<PathBuf, PathBuf>,
+    warnings: Vec<String>,
+    cancelled: Arc<AtomicBool>,
 }
 
 impl ProjectRoots {
+    pub fn cancel_handle(&self) -> Arc<AtomicBool> {
+        self.cancelled.clone()
+    }
+    pub fn take_warnings(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.warnings)
+    }
     /// Cache failures too: old sessions may point at directories that no longer exist.
     pub fn resolve(&mut self, cwd: &Path) -> PathBuf {
+        let warnings = &mut self.warnings;
+        let cancelled = &self.cancelled;
         self.cache
             .entry(cwd.to_owned())
             .or_insert_with(|| {
@@ -37,7 +52,7 @@ impl ProjectRoots {
                     .find(|p| p.file_name().is_some_and(|n| n == ".git"))
                     .and_then(Path::parent)
                     .unwrap_or(directory);
-                git_root(directory)
+                git_root(directory, warnings, cancelled)
                     .and_then(|p| normalize(&p, None))
                     .unwrap_or_else(|| directory.to_owned())
             })
@@ -45,20 +60,53 @@ impl ProjectRoots {
     }
 }
 
-fn git_root(cwd: &Path) -> Option<PathBuf> {
+fn git_root(cwd: &Path, warnings: &mut Vec<String>, cancelled: &AtomicBool) -> Option<PathBuf> {
+    if cancelled.load(Ordering::Relaxed) {
+        return None;
+    }
     let mut command = Command::new("git");
     for key in GIT_ENV {
         command.env_remove(key);
     }
-    let output = command
+    // A file avoids pipe-buffer deadlocks even with a very long root path.
+    let output_file = tempfile::tempfile().ok()?;
+    let mut child = command
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(cwd)
-        .output()
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .stdout(output_file.try_clone().ok()?)
+        .spawn()
         .ok()?;
-    if !output.status.success() {
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None)
+                if started.elapsed() < Duration::from_secs(2)
+                    && !cancelled.load(Ordering::Relaxed) =>
+            {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                warnings.push(format!(
+                    "git root lookup timed out or cancelled: {}",
+                    cwd.display()
+                ));
+                return None;
+            }
+        }
+    };
+    use std::io::{Read, Seek};
+    let mut output_file = output_file;
+    output_file.rewind().ok()?;
+    let mut bytes = vec![];
+    output_file.read_to_end(&mut bytes).ok()?;
+    if !status.success() {
         return None;
     }
-    let mut bytes = output.stdout;
     // Remove git's line ending, preserving whitespace in the actual path.
     if bytes.last() == Some(&b'\n') {
         bytes.pop();

@@ -77,3 +77,6 @@ nominal tail before an ignored attachment, printable/empty IDs, signed timestamp
 fields (skipped lines), file-based project filters and quoted interruption prose.
 Removing the backward scan fails the straddling-record test. Timestamp numeric
 fields must contain ASCII digits, including year/month/day and offset fields.
+
+Retained last user and assistant text is capped at the latest 8 KiB each,
+on a UTF-8 boundary. Status derivation still sees the full sampled text.

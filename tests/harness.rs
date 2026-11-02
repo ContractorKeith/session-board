@@ -306,9 +306,12 @@ fn empty_stores_list_and_cli_contract() {
         String::from_utf8(output.stdout).unwrap().trim(),
         env!("CARGO_PKG_VERSION")
     );
-    let output = command(temp.path()).output().unwrap();
+    let output = command(temp.path()).arg("--help").output().unwrap();
     assert!(output.status.success());
-    assert_eq!(output.stdout, b"TUI lands in M2\n");
+    let help = String::from_utf8(output.stdout).unwrap();
+    for name in ["list", "doctor", "version"] {
+        assert!(help.contains(name));
+    }
     let output = command(temp.path()).arg("unknown").output().unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(!temp.path().join("state").exists());
@@ -520,6 +523,8 @@ fn config_errors_name_the_file() {
 fn closed_or_full_stdout_does_not_panic() {
     use std::process::Stdio;
     let temp = tempfile::tempdir().unwrap();
+    // An empty but present store keeps the exit code at 0 whether or not the pipe closes first.
+    fs::create_dir_all(temp.path().join(".claude/projects")).unwrap();
     let full = fs::File::create("/dev/full").unwrap();
     let output = command(temp.path())
         .arg("version")
@@ -600,4 +605,16 @@ fn symlinked_config_and_state_files_load() {
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[0].root, Path::new("/from-link"));
     assert!(projects[0].pinned);
+}
+
+#[test]
+fn default_command_refuses_piped_stdout() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = command(temp.path()).output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "sboard: interactive terminal required; run sboard list for script output.\n"
+    );
 }

@@ -9,9 +9,9 @@ MIT. "Done" for v1 is every row marked v1 in `docs/PLAN.md` §4 passing the acce
 §10 on Omarchy, the Mac Studio and GitHub Actions.
 
 ## Status
-M1 in review — 2026-11-01: Claude Code and Codex sources, transcript status rules,
-filtered list, doctor counts, normalized project identity and agent-prefixed session IDs.
-Fixture/golden coverage and Linux/macOS CI; no TUI yet (M2). M0 merged in PR #9.
+M2 in review — 2026-11-01: Ratatui project tree, session detail, help and navigation,
+background scans and a debounced recursive store watcher. M0 and M1 merged.
+Enter remains a placeholder for M3; no TUI state is persisted until M4.
 
 ## Commands
 ```bash
