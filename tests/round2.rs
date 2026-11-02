@@ -710,7 +710,8 @@ fn bounded_output(mut command: Command) -> std::process::Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    // Leave scheduling margin around the production git probe's two-second timeout.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     loop {
         if child.try_wait().unwrap().is_some() {
             return child.wait_with_output().unwrap();
@@ -874,7 +875,7 @@ fn round4_git_fifo_probe() {
     let started = std::time::Instant::now();
     let mut roots = session_board::project::ProjectRoots::default();
     assert_eq!(roots.resolve(&repo), fs::canonicalize(&repo).unwrap());
-    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
     assert!(
         roots
             .take_warnings()

@@ -1,3 +1,4 @@
+mod attention;
 mod detail;
 mod open;
 mod tree;
@@ -33,6 +34,11 @@ pub enum Row {
 }
 
 pub struct App {
+    pub state: session_board::state::State,
+    pub attention_focus: bool,
+    pub attention_selected: usize,
+    pub attention_path: Option<PathBuf>,
+    pub attention_collapsed: bool,
     pub projects: Vec<Project>,
     pub folded: HashSet<PathBuf>,
     pub selected: usize,
@@ -44,6 +50,7 @@ pub struct App {
     pub page_size: Cell<usize>,
     pub scan_warnings: Vec<String>,
     pub watch_warnings: Vec<String>,
+    pub notify_warnings: Vec<String>,
 }
 #[derive(PartialEq, Debug)]
 pub enum Action {
@@ -57,6 +64,11 @@ pub enum Action {
 impl App {
     pub fn new(color: bool) -> Self {
         Self {
+            state: Default::default(),
+            attention_focus: false,
+            attention_selected: 0,
+            attention_path: None,
+            attention_collapsed: false,
             projects: vec![],
             folded: HashSet::new(),
             selected: 0,
@@ -68,6 +80,7 @@ impl App {
             page_size: Cell::new(10),
             scan_warnings: vec![],
             watch_warnings: vec![],
+            notify_warnings: vec![],
         }
     }
     pub(super) fn suspend<T>(
@@ -104,6 +117,14 @@ impl App {
         rows
     }
     pub fn session(&self) -> Option<&Session> {
+        if self.attention_focus && !self.attention_collapsed {
+            return self.attention_path.as_ref().and_then(|path| {
+                self.projects
+                    .iter()
+                    .flat_map(|p| &p.sessions)
+                    .find(|s| &s.transcript_path == path)
+            });
+        }
         match self.rows().get(self.selected)? {
             Row::Session(path) => self
                 .projects
@@ -120,6 +141,7 @@ impl App {
         self.selected = selected
             .and_then(|row| rows.iter().position(|r| r == &row))
             .unwrap_or(self.selected.min(rows.len().saturating_sub(1)));
+        self.reconcile_attention();
     }
     pub fn key(&mut self, key: KeyEvent) -> Action {
         if key.kind == KeyEventKind::Release {
@@ -136,6 +158,9 @@ impl App {
         }
         if self.help {
             return Action::None;
+        }
+        if let Some(action) = self.attention_key(key.code) {
+            return action;
         }
         let rows = self.rows();
         match key.code {
@@ -197,6 +222,7 @@ impl App {
             .watch_warnings
             .iter()
             .chain(&self.scan_warnings)
+            .chain(&self.notify_warnings)
             .collect();
         match warnings.first() {
             Some(first) => format!("{} | {} warnings: {first}", message, warnings.len()),
@@ -210,14 +236,25 @@ impl App {
         }
     }
     pub fn render(&self, frame: &mut Frame, now: i64) {
+        let items = self.attention_items();
         let vertical =
             Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(frame.area());
         if self.help {
-            frame.render_widget(Paragraph::new("j / k / ↑ / ↓  move\nPgUp / PgDn / Home / End  page / ends\nh / l / ← / →  fold / unfold project\nEnter open · n new · w new in worktree\nr  rescan\n?  toggle help\nq / Ctrl-C  quit").block(Block::default().borders(Borders::ALL).title("Help")), vertical[0]);
+            frame.render_widget(Paragraph::new("Tab  attention / tree\nAttention focus: h / l collapse / expand; j / k move\nAttention focus: Enter opens selected session\nj / k / ↑ / ↓  move\nPgUp / PgDn / Home / End  page / ends\nTree focus: h / l / ← / → fold / unfold project\nEnter open · n new · w new in worktree\nr  rescan\n?  toggle help\nq / Ctrl-C  quit").block(Block::default().borders(Borders::ALL).title("Help")), vertical[0]);
         } else {
+            let content = Layout::vertical([
+                Constraint::Length(attention::height(
+                    items.len(),
+                    self.attention_collapsed,
+                    frame.area().height,
+                )),
+                Constraint::Min(0),
+            ])
+            .split(vertical[0]);
+            attention::render(self, &items, frame, content[0], now);
             let panes =
                 Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
-                    .split(vertical[0]);
+                    .split(content[1]);
             tree::render(self, frame, panes[0], now);
             detail::render(self, frame, panes[1]);
         }
@@ -227,7 +264,17 @@ impl App {
             Constraint::Length(hint.chars().count() as u16),
         ])
         .split(vertical[1]);
-        frame.render_widget(Paragraph::new(self.status_text()), bar[0]);
+        frame.render_widget(
+            Paragraph::new({
+                let count = items.len();
+                if count > 0 {
+                    format!("{count} need you · {}", self.status_text())
+                } else {
+                    self.status_text()
+                }
+            }),
+            bar[0],
+        );
         frame.render_widget(Paragraph::new(hint), bar[1]);
     }
 }
@@ -331,6 +378,8 @@ fn event_loop(
     });
     let mut pending = false;
     let mut open = open::Open::default();
+    let mut transitions = session_board::notify::Transitions::default();
+    let mut desktop = session_board::notify::Delivery::desktop()?;
     let mut dirty = true;
     let mut worker_dead = false;
     let mut next_age = Instant::now();
@@ -340,6 +389,11 @@ fn event_loop(
         }
         if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
             return Err(io::Error::other("terminal closed"));
+        }
+        let notification_warnings = desktop.take_warnings();
+        if !notification_warnings.is_empty() {
+            app.notify_warnings.extend(notification_warnings);
+            dirty = true;
         }
         while let Ok(warnings) = scans.status.try_recv() {
             app.watch_warnings = warnings;
@@ -361,6 +415,20 @@ fn event_loop(
                 Ok(result) => {
                     app.summary = format!("{} projects", result.projects.len());
                     app.scan_warnings = result.warnings;
+                    if let Ok((config, _)) = session_board::config::Config::path()
+                        .and_then(|path| session_board::config::Config::load(&path))
+                    {
+                        transitions.scan(&result.projects, config.notify, &mut desktop);
+                    }
+                    match session_board::state::State::path()
+                        .and_then(|path| session_board::state::State::load(&path))
+                    {
+                        Ok((state, warnings)) => {
+                            app.state = state;
+                            app.scan_warnings.extend(warnings);
+                        }
+                        Err(error) => app.scan_warnings.push(format!("state: {error}")),
+                    }
                     app.replace(result.projects);
                 }
                 Err(error) => {

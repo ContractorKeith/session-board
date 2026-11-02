@@ -5,7 +5,6 @@ from datetime import datetime, timezone, timedelta
 import os
 from pathlib import Path
 import pty
-import select
 import re
 import unicodedata
 import shlex
@@ -15,16 +14,16 @@ import subprocess
 import sys
 import tempfile
 import time
-
-BINARY = str(Path(sys.argv[1]).resolve())
-PROBE = str(Path(sys.argv[2]).resolve()) if len(sys.argv) > 2 else None
+from pty_probe import deadline, drain, read_ready
 
 
 def screen(data):
     # Reconstruct cursor-addressed diff output without an external terminal emulator.
     grid = [[' '] * 100 for _ in range(30)]
     row = col = 0
-    chunks = re.split(r'(\x1b\[[?0-9;]*[A-Za-z])', data.decode('utf-8', errors='ignore'))
+    # Rebuilt from the full transcript each call; wait for a partial CSI's next read.
+    text = re.sub(r'\x1b\[[?0-9;]*$', '', data.decode('utf-8', errors='ignore'))
+    chunks = re.split(r'(\x1b\[[?0-9;]*[A-Za-z])', text)
     for chunk in chunks:
         if chunk.startswith('\x1b['):
             match = re.fullmatch(r'\x1b\[([?0-9;]*)([A-Za-z])', chunk)
@@ -49,11 +48,13 @@ def screen(data):
 
 
 def case(mode):
-    with tempfile.TemporaryDirectory() as tmp:
+    stage = 'setup'
+    with deadline(lambda: f'script_pty_terminal_hygiene_and_worker_recovery [{mode}]: waiting for {stage}'), tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         (root / 'claude/projects/project').mkdir(parents=True)
         (root / 'codex/sessions').mkdir(parents=True)
-        rows = [json.loads(line) for line in Path('fixtures/claude_code/project/done.jsonl').read_text().splitlines()]
+        fixture = 'waiting' if mode == 'attention-resume' else 'done'
+        rows = [json.loads(line) for line in Path(f'fixtures/claude_code/project/{fixture}.jsonl').read_text().splitlines()]
         for row in rows:
             if 'timestamp' in row: row['timestamp'] = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat().replace('+00:00', 'Z')
         (root / 'claude/projects/project/session.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
@@ -85,6 +86,9 @@ def case(mode):
             (bindir / 'tmux').write_text('#!/bin/sh\nif [ "$1" = -S ] || [ "$1" = -L ]; then shift 2; fi\nif [ "$1" = list-panes ]; then cat "$PANES"; elif [ "$1" = display ]; then echo %0; elif [ "$1" = switch-client ]; then echo pane-gone >&2; exit 1; else exit 0; fi\n')
         if mode == 'attach-failure':
             (bindir / 'tmux').write_text('#!/bin/sh\nif [ "$1" = -S ] || [ "$1" = -L ]; then shift 2; fi\nif [ "$1" = list-panes ]; then cat "$PANES"; elif [ "$1" = display ]; then echo %0; elif [ "$1" = attach ]; then echo attach-denied >&2; exit 1; else exit 0; fi\n')
+        if mode == 'attention-resume':
+            (bindir / 'claude').write_text('#!/bin/sh\nstty -a > "$TERMINAL_FLAGS"\nprintf "%s\\n" "$@" > "$ATTENTION_ARGS"\nprintf "agent returned\\n"\n')
+            env['ATTENTION_ARGS'] = str(root / 'attention-args')
         env['READY_FILE'] = str(root / 'ready')
         env['FINISHED_FILE'] = str(root / 'finished')
         env['INT_FILE'] = str(root / 'int')
@@ -92,7 +96,7 @@ def case(mode):
         env['TERMINAL_FLAGS'] = str(root / 'flags')
         env.pop('TMUX', None)
         if mode in ('socket-mismatch', 'vanished-pane', 'jump-failure'): env['TMUX'] = '/fake/live,1,0'
-        if mode in ('resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure'):
+        if mode in ('resume', 'attention-resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure'):
             for row in rows:
                 if 'cwd' in row: row['cwd'] = str(root)
             (root / 'claude/projects/project/session.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
@@ -127,9 +131,10 @@ def case(mode):
         output = b''
         def pump():
             nonlocal output
-            if select.select([master], [], [], .02)[0]:
-                output += os.read(master, 65536)
+            output += read_ready(master, .02)
         def wait_for(predicate, description):
+            nonlocal stage
+            stage = description
             end = time.monotonic() + 8
             while time.monotonic() < end:
                 pump()
@@ -220,10 +225,10 @@ def case(mode):
                     os.write(master, b'j')
                     wait_for(lambda: 'launched ' not in screen(output), 'next key did not clear outcome')
                 os.write(master, b'q')
-            elif mode in ('resume', 'launch'):
+            elif mode in ('resume', 'attention-resume', 'launch'):
                 wait_for(lambda: '1 projects' in screen(output), 'initial scan did not arrive')
-                if mode == 'resume':
-                    os.write(master, b'j\r')
+                if mode in ('resume', 'attention-resume'):
+                    os.write(master, b'\t\r' if mode == 'attention-resume' else b'j\r')
                 else:
                     os.write(master, b'n')
                     wait_for(lambda: 'Agent: c claude_code' in screen(output), 'no agent prompt')
@@ -233,7 +238,9 @@ def case(mode):
                 flags = (root / 'flags').read_text()
                 assert re.search(r'(?<!-)\bicanon\b', flags), flags
                 assert re.search(r'(?<!-)\becho\b', flags), flags
-                wait_for(lambda: ('resumed ' if mode == 'resume' else 'launched ') in screen(output), 'outcome missing after return')
+                wait_for(lambda: ('resumed ' if mode in ('resume', 'attention-resume') else 'launched ') in screen(output), 'outcome missing after return')
+                if mode == 'attention-resume':
+                    assert (root / 'attention-args').read_text().splitlines() == ['--resume=waiting']
                 os.write(master, b'q')
             elif mode in ('q', 'idle', 'color-empty', 'color-off'):
                 wait_for(lambda: '1 projects' in screen(output), 'initial scan did not arrive')
@@ -247,8 +254,8 @@ def case(mode):
                     assert colored == (mode == 'color-empty'), (mode, colored)
                 os.write(master, b'q')
             wait_for(lambda: proc.poll() is not None, 'process failed to exit')
-            while select.select([master], [], [], .02)[0]:
-                output += os.read(master, 65536)
+            stage = 'final terminal output'
+            output += drain(master)
             if mode in ('termios', 'cli-termios'):
                 flags = (root / 'exit-flags').read_text()
                 for flag in ('icanon', 'echo', 'icrnl'):
@@ -267,9 +274,12 @@ def case(mode):
                     try: os.kill(int(pidfile.read_text()), signal.SIGKILL)
                     except ProcessLookupError: pass
                 proc.kill()
-                proc.wait()
+                proc.wait(timeout=5)
             os.close(master)
             os.close(slave)
 
-for mode in ([os.environ['SBOARD_PTY_CASE']] if 'SBOARD_PTY_CASE' in os.environ else ['TERM'] if PROBE is None else ['TERM', 'INT', 'HUP', 'q', 'scan-panic', 'error', 'hook', 'dumb', 'stdin', 'idle', 'color-empty', 'color-off', 'unwatched', 'resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure', 'cli-termios']):
-    case(mode)
+if __name__ == '__main__':
+    BINARY = str(Path(sys.argv[1]).resolve())
+    PROBE = str(Path(sys.argv[2]).resolve()) if len(sys.argv) > 2 else None
+    for mode in ([os.environ['SBOARD_PTY_CASE']] if 'SBOARD_PTY_CASE' in os.environ else ['TERM'] if PROBE is None else ['TERM', 'INT', 'HUP', 'q', 'scan-panic', 'error', 'hook', 'dumb', 'stdin', 'idle', 'color-empty', 'color-off', 'unwatched', 'resume', 'attention-resume', 'launch', 'termios', 'child-int', 'cli-int', 'cli-open-int', 'message', 'stale-pane', 'socket-mismatch', 'vanished-pane', 'jump-failure', 'attach-failure', 'cli-termios']):
+        case(mode)

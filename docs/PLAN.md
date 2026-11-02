@@ -160,6 +160,16 @@ temp file and rename. Config file (`~/.config/sboard/config.toml`): `roots = []`
 roots to include even with no sessions), `window_days = 7`, `agents = { claude_code = true, ... }`,
 `notify = false`, `tmux.socket = ""`.
 
+Notification transitions compare observed status/activity pairs, without a scan-time or
+activity watermark. First-seen sessions have a five-minute age window against the current
+clock. Retain the last 32 announced raw pairs per session and reject activity below the
+oldest retained announcement floor. Floor timestamps are capped at announcement time; a
+backward clock step starts a new floor interval while raw-pair deduplication is retained.
+
+Desktop notifications are per sboard process: two instances may each announce the same
+transition. A notifier that deliberately daemonizes with `setsid()` and forks again leaves
+the command process group and is outside the five-second process-group timeout.
+
 ## 7. CLI contract
 
 ```

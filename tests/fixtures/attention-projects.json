@@ -1,0 +1,137 @@
+[
+  {
+    "root": "/fixture/alpha",
+    "name": "alpha",
+    "sessions": [
+      {
+        "id": "a-wait",
+        "agent": "claude_code",
+        "cwd": "/fixture/alpha",
+        "project_root": "/fixture/alpha",
+        "title": "a-wait",
+        "started_at": 1793534340,
+        "last_activity_at": 100,
+        "status": "waiting",
+        "last_user_text": "User placeholder",
+        "last_assistant_text": "Assistant placeholder",
+        "transcript_path": "/fixture/a-wait.jsonl",
+        "resume_hint": "claude --resume done",
+        "pane": null
+      },
+      {
+        "id": "a-done",
+        "agent": "claude_code",
+        "cwd": "/fixture/alpha",
+        "project_root": "/fixture/alpha",
+        "title": "a-done",
+        "started_at": 1793534340,
+        "last_activity_at": 999,
+        "status": "done",
+        "last_user_text": "User placeholder",
+        "last_assistant_text": "Assistant placeholder",
+        "transcript_path": "/fixture/a-done.jsonl",
+        "resume_hint": "claude --resume done",
+        "pane": null
+      }
+    ],
+    "pinned": false,
+    "tags": [],
+    "archived": false,
+    "unread_count": 14
+  },
+  {
+    "root": "/fixture/beta",
+    "name": "beta",
+    "sessions": [
+      {
+        "id": "b-error",
+        "agent": "claude_code",
+        "cwd": "/fixture/beta",
+        "project_root": "/fixture/beta",
+        "title": "b-error",
+        "started_at": 1793534340,
+        "last_activity_at": 700,
+        "status": "error",
+        "last_user_text": "User placeholder",
+        "last_assistant_text": "Assistant placeholder",
+        "transcript_path": "/fixture/b-error.jsonl",
+        "resume_hint": "claude --resume done",
+        "pane": null
+      },
+      {
+        "id": "b-wait",
+        "agent": "claude_code",
+        "cwd": "/fixture/beta",
+        "project_root": "/fixture/beta",
+        "title": "b-wait",
+        "started_at": 1793534340,
+        "last_activity_at": 200,
+        "status": "waiting",
+        "last_user_text": "User placeholder",
+        "last_assistant_text": "Assistant placeholder",
+        "transcript_path": "/fixture/b-wait.jsonl",
+        "resume_hint": "claude --resume done",
+        "pane": null
+      }
+    ],
+    "pinned": false,
+    "tags": [],
+    "archived": false,
+    "unread_count": 14
+  },
+  {
+    "root": "/fixture/gamma",
+    "name": "gamma",
+    "sessions": [
+      {
+        "id": "g-wait",
+        "agent": "claude_code",
+        "cwd": "/fixture/gamma",
+        "project_root": "/fixture/gamma",
+        "title": "g-wait",
+        "started_at": 1793534340,
+        "last_activity_at": 200,
+        "status": "waiting",
+        "last_user_text": "User placeholder",
+        "last_assistant_text": "Assistant placeholder",
+        "transcript_path": "/fixture/g-wait.jsonl",
+        "resume_hint": "claude --resume done",
+        "pane": null
+      },
+      {
+        "id": "g-error",
+        "agent": "claude_code",
+        "cwd": "/fixture/gamma",
+        "project_root": "/fixture/gamma",
+        "title": "g-error",
+        "started_at": 1793534340,
+        "last_activity_at": 800,
+        "status": "error",
+        "last_user_text": "User placeholder",
+        "last_assistant_text": "Assistant placeholder",
+        "transcript_path": "/fixture/g-error.jsonl",
+        "resume_hint": "claude --resume done",
+        "pane": null
+      },
+      {
+        "id": "g-idle",
+        "agent": "claude_code",
+        "cwd": "/fixture/gamma",
+        "project_root": "/fixture/gamma",
+        "title": "g-idle",
+        "started_at": 1793534340,
+        "last_activity_at": 9999,
+        "status": "idle",
+        "last_user_text": "User placeholder",
+        "last_assistant_text": "Assistant placeholder",
+        "transcript_path": "/fixture/g-idle.jsonl",
+        "resume_hint": "claude --resume done",
+        "pane": null
+      }
+    ],
+    "pinned": false,
+    "tags": [],
+    "archived": false,
+    "unread_count": 14
+  }
+]

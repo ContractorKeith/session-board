@@ -35,6 +35,8 @@ pub struct StoreWatcher {
     stop: mpsc::Sender<Wake>,
     worker: Option<thread::JoinHandle<()>>,
     pub status: Receiver<Vec<String>>,
+    #[cfg(test)]
+    pub observed: Receiver<()>,
 }
 impl StoreWatcher {
     #[cfg(test)]
@@ -62,6 +64,8 @@ impl StoreWatcher {
             })
             .collect();
         reconcile(&mut roots, &mut watcher, &status);
+        #[cfg(test)]
+        let (observed, observations) = mpsc::channel();
         let worker = thread::spawn(move || {
             let mut due = None;
             let mut recheck = Instant::now() + RECHECK;
@@ -90,6 +94,8 @@ impl StoreWatcher {
                         }
                         // A fixed window cannot be starved by a streaming transcript.
                         due.get_or_insert_with(|| Instant::now() + DEBOUNCE);
+                        #[cfg(test)]
+                        let _ = observed.send(());
                     }
                     Ok(Wake::Event(Err(_))) => {
                         recheck = Instant::now();
@@ -113,6 +119,8 @@ impl StoreWatcher {
             stop: events,
             worker: Some(worker),
             status: statuses,
+            #[cfg(test)]
+            observed: observations,
         })
     }
 }
@@ -328,11 +336,19 @@ mod tests {
         assert!(reconcile(&mut roots, &mut LimitedWatcher, &status));
         assert!(roots[0].watched.is_some());
         assert!(roots[1].watched.is_none());
-        let warnings = statuses.recv().unwrap();
+        let warnings = statuses.recv_timeout(Duration::from_secs(10)).expect(
+            "attachment_failure_preserves_other_roots_and_reports_missing: reconciliation status",
+        );
         assert!(warnings.iter().any(|s| s.contains("unwatched: limited")));
         assert!(warnings.iter().any(|s| s.contains("watch limit")));
         let (watcher, _) = StoreWatcher::new(&[temp.path().join("missing")]).unwrap();
-        assert!(watcher.status.recv().unwrap()[0].contains("unwatched:"));
+        assert!(
+            watcher.status.recv_timeout(Duration::from_secs(10)).expect(
+                "attachment_failure_preserves_other_roots_and_reports_missing: missing-root status"
+            )[0]
+            .contains("unwatched:")
+        );
+        assert!(watcher.observed.try_recv().is_err());
     }
     #[test]
     fn initial_scan_and_cancel_do_not_wait_for_refresh_deadline() {

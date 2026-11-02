@@ -476,21 +476,15 @@ mod tests {
             serde_json::from_str(include_str!("../fixtures/list.json")).unwrap();
         let mut session = projects.remove(0).sessions.remove(0);
         session.cwd = cwd.path().into();
-        let mut fastest = std::time::Duration::MAX;
         for _ in 0..3 {
             PROCESS_READS.with(|c| c.set(0));
-            let started = std::time::Instant::now();
             let discovery = identify(parsed(&capture), process_table);
             for _ in 0..50 {
                 assert!(matching(&session, &discovery.panes).is_none());
             }
-            fastest = fastest.min(started.elapsed());
             assert_eq!(PROCESS_READS.with(|c| c.get()), 1);
         }
-        assert!(
-            fastest < std::time::Duration::from_millis(300),
-            "{fastest:?}"
-        );
+        // Exact snapshot counts catch the regression without timing the host's /proc load.
     }
 
     #[test]

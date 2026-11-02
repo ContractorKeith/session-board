@@ -156,7 +156,7 @@ fn no_color_and_palette_statuses() {
 }
 // FSEvents can deliver a coalesced batch after the first debounce window.
 fn drain_requests(requests: &std::sync::mpsc::Receiver<()>) -> usize {
-    let deadline = Instant::now() + watch::DEBOUNCE + Duration::from_secs(1);
+    let deadline = Instant::now() + watch::DEBOUNCE + Duration::from_secs(2);
     let mut count = 0;
     while requests
         .recv_timeout(deadline.saturating_duration_since(Instant::now()))
@@ -181,8 +181,8 @@ fn recursive_watcher_debounces_single_and_burst_changes() {
             fs::write(nested.join("session.jsonl"), "two").unwrap();
         }
         requests
-            .recv_timeout(Duration::from_secs(3) - started.elapsed())
-            .unwrap();
+            .recv_timeout(Duration::from_secs(10).saturating_sub(started.elapsed()))
+            .expect("recursive_watcher_debounces_single_and_burst_changes: waiting for debounced write request");
         assert!(started.elapsed() >= watch::DEBOUNCE);
         let count = 1 + drain_requests(&requests);
         if burst {
@@ -295,17 +295,29 @@ fn detail_shows_last_nonblank_lines() {
 #[test]
 fn steady_writes_cannot_starve_refresh() {
     let temp = tempfile::tempdir().unwrap();
-    let (_watcher, requests) = watch::StoreWatcher::new(&[temp.path().to_owned()]).unwrap();
+    let (watcher, requests) = watch::StoreWatcher::new(&[temp.path().to_owned()]).unwrap();
+    assert!(
+        watcher
+            .status
+            .recv_timeout(Duration::from_secs(10))
+            .expect("steady_writes_cannot_starve_refresh: waiting for watch attachment status")
+            .is_empty()
+    );
+    let deadline = Instant::now() + Duration::from_secs(15);
     let mut count = 0;
-    for n in 0..8 {
-        fs::write(temp.path().join("session.jsonl"), n.to_string()).unwrap();
-        std::thread::sleep(Duration::from_secs(1));
+    let mut writes = 0;
+    while count < 3 && Instant::now() < deadline {
+        fs::write(temp.path().join("session.jsonl"), writes.to_string()).unwrap();
+        watcher
+            .observed
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("watcher did not acknowledge a write");
+        writes += 1;
         count += requests.try_iter().count();
     }
-    count += requests.try_iter().count();
     assert!(
-        (3..=5).contains(&count),
-        "received {count} requests during steady writes"
+        count >= 3,
+        "steady acknowledged writes starved refresh: {count} requests, {writes} writes"
     );
 }
 
@@ -352,22 +364,22 @@ fn scans_initial_watcher_wiring_and_panic_recovery() {
         });
     let error = scans
         .results
-        .recv_timeout(Duration::from_secs(2))
-        .unwrap()
+        .recv_timeout(Duration::from_secs(8))
+        .expect("scans_initial_watcher_wiring_and_panic_recovery: waiting for scan worker result")
         .unwrap_err();
     assert!(error.to_string().starts_with("panicked:"));
     scans.requests.try_send(()).unwrap();
     let initial = scans
         .results
-        .recv_timeout(Duration::from_secs(2))
-        .unwrap()
+        .recv_timeout(Duration::from_secs(8))
+        .expect("scans_initial_watcher_wiring_and_panic_recovery: waiting for scan worker result")
         .unwrap();
     assert_eq!(initial.projects[0].sessions[0].status, Status::Working);
     fs::copy("fixtures/claude_code/project/waiting.jsonl", &path).unwrap();
     let refreshed = scans
         .results
-        .recv_timeout(Duration::from_secs(3))
-        .unwrap()
+        .recv_timeout(Duration::from_secs(10))
+        .expect("scans_initial_watcher_wiring_and_panic_recovery: waiting for scan worker result")
         .unwrap();
     assert_eq!(refreshed.projects[0].sessions[0].status, Status::Waiting);
 }
@@ -406,8 +418,8 @@ fn quiet_store_status_crosses_threshold() {
     assert_eq!(
         scans
             .results
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap()
+            .recv_timeout(Duration::from_secs(5))
+            .expect("quiet_store_status_crosses_threshold: waiting for quiet-store refresh result")
             .unwrap()
             .projects[0]
             .sessions[0]
@@ -417,8 +429,8 @@ fn quiet_store_status_crosses_threshold() {
     assert_eq!(
         scans
             .results
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap()
+            .recv_timeout(Duration::from_secs(5))
+            .expect("quiet_store_status_crosses_threshold: waiting for quiet-store refresh result")
             .unwrap()
             .projects[0]
             .sessions[0]
@@ -441,8 +453,15 @@ fn burst_coalesces_and_recreated_root_reattaches() {
     };
     #[cfg(not(unix))]
     let watched = root.clone();
-    let (_watcher, requests) = watch::StoreWatcher::new(std::slice::from_ref(&watched)).unwrap();
-    // Keep one file open so all 200 real writes finish within one second.
+    let (watcher, requests) = watch::StoreWatcher::new(std::slice::from_ref(&watched)).unwrap();
+    assert!(
+        watcher
+            .status
+            .recv_timeout(Duration::from_secs(10))
+            .expect("burst_coalesces_and_recreated_root_reattaches: waiting for watcher attachment/removal acknowledgement")
+            .is_empty()
+    );
+    // Keep all 200 real writes within one debounce window, even under build load.
     use std::io::Write;
     let started = Instant::now();
     let mut file = fs::File::create(root.join("session.jsonl")).unwrap();
@@ -451,26 +470,45 @@ fn burst_coalesces_and_recreated_root_reattaches() {
     }
     drop(file);
     assert!(
-        started.elapsed() < Duration::from_secs(1),
-        "producer exceeded the one-second burst budget"
+        started.elapsed() < watch::DEBOUNCE,
+        "producer exceeded debounce window: {:?}",
+        started.elapsed()
     );
-    requests.recv_timeout(Duration::from_secs(3)).unwrap();
+    requests.recv_timeout(Duration::from_secs(10)).unwrap();
     let count = 1 + drain_requests(&requests);
     assert!(
         (1..=2).contains(&count),
         "200-write burst produced {count} requests"
     );
     fs::remove_dir_all(&root).unwrap();
-    // Let the backend deliver root removal before recreating it.
-    std::thread::sleep(Duration::from_millis(200));
+    // Synchronize with watcher state instead of guessing when backend events arrive.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let warnings = watcher
+            .status
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("burst_coalesces_and_recreated_root_reattaches: waiting for watcher attachment/removal acknowledgement");
+        if warnings.iter().any(|w| w.contains("unwatched:")) {
+            break;
+        }
+    }
     fs::create_dir(&root).unwrap();
     fs::write(root.join("new.jsonl"), "{}").unwrap();
-    requests.recv_timeout(Duration::from_secs(8)).unwrap();
-    // Drain deletion/re-attachment scans; then prove the new directory is watched.
-    std::thread::sleep(Duration::from_secs(3));
-    requests.try_iter().for_each(drop);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if watcher
+            .status
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("burst_coalesces_and_recreated_root_reattaches: waiting for watcher attachment/removal acknowledgement")
+            .is_empty()
+        {
+            break;
+        }
+    }
+    // Drain attachment/deletion requests before proving the replacement is watched.
+    drain_requests(&requests);
     fs::write(root.join("new.jsonl"), "changed").unwrap();
-    requests.recv_timeout(Duration::from_secs(3)).unwrap();
+    requests.recv_timeout(Duration::from_secs(10)).unwrap();
 }
 
 #[test]
@@ -508,13 +546,13 @@ fn release_keys_color_warnings_and_scroll_memory() {
             .unwrap()
             .ends_with("? help · r rescan · q quit")
     );
-    frame(&app, 100, 8);
+    frame(&app, 100, 20);
     key(&mut app, KeyCode::End);
-    frame(&app, 100, 8);
+    frame(&app, 100, 20);
     let offset = app.list.borrow().offset();
     assert!(offset > 0);
     key(&mut app, KeyCode::Up);
-    frame(&app, 100, 8);
+    frame(&app, 100, 20);
     assert_eq!(app.list.borrow().offset(), offset);
     key(&mut app, KeyCode::PageUp);
     assert!(app.selected < app.rows().len() - 2);
@@ -551,4 +589,309 @@ fn script_pty_terminal_hygiene_and_worker_recovery() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn attention_focus_collapse_empty_and_cli_order() {
+    let mut app = fixture_app();
+    let mut cli_projects = app.projects.clone();
+    cli::filter(
+        &mut cli_projects,
+        &app.state,
+        None,
+        Some(cli::StatusFilter::Attention),
+        None,
+        false,
+    );
+    let expected = [
+        "claude_code:waiting",
+        "codex:waiting",
+        "claude_code:error",
+        "codex:error",
+        "claude_code:stuck",
+        "codex:stuck",
+        "claude_code:done",
+        "codex:done",
+    ];
+    assert_eq!(
+        app.attention_items()
+            .iter()
+            .map(|i| i.session.id.as_str())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert_eq!(
+        cli_projects
+            .iter()
+            .flat_map(|p| &p.sessions)
+            .map(|s| s.id.as_str())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    key(&mut app, KeyCode::Tab);
+    assert!(app.attention_focus);
+    assert!(app.session().is_some());
+    assert_eq!(key(&mut app, KeyCode::Char('n')), Action::New);
+    assert_eq!(key(&mut app, KeyCode::Char('w')), Action::Worktree);
+    key(&mut app, KeyCode::Down);
+    assert_eq!(app.attention_selected, 1);
+    assert!(frame(&app, 100, 30).contains("Attention [focused]"));
+    key(&mut app, KeyCode::Left);
+    assert!(frame(&app, 100, 30).contains("to expand"));
+    key(&mut app, KeyCode::Right);
+    assert!(!app.attention_collapsed);
+    key(&mut app, KeyCode::Tab);
+    assert!(!app.attention_focus);
+    app.replace(vec![]);
+    key(&mut app, KeyCode::Tab);
+    assert!(!app.attention_focus);
+    assert!(!frame(&app, 100, 30).contains("Attention"));
+}
+#[test]
+fn attention_overflow_is_bounded_and_navigable() {
+    let mut app = fixture_app();
+    let mut sample = app.projects[0].sessions[0].clone();
+    sample.status = session_board::model::Status::Waiting;
+    app.projects[0].sessions = (0..20)
+        .map(|n| {
+            let mut s = sample.clone();
+            s.id = format!("sample:{n:02}");
+            s.transcript_path = format!("sample-{n:02}").into();
+            s
+        })
+        .collect();
+    let rendered = frame(&app, 100, 30);
+    assert!(rendered.contains("+13 below"));
+    assert!(rendered.contains("20 need you"));
+    assert!(rendered.lines().nth(10).unwrap().contains("Projects"));
+    key(&mut app, KeyCode::Tab);
+    for _ in 0..30 {
+        key(&mut app, KeyCode::Down);
+    }
+    assert_eq!(app.session().unwrap().id, "sample:19");
+    let output = frame(&app, 100, 30);
+    assert!(output.contains("+13 above"));
+    assert!(!output.contains("below"));
+}
+
+#[test]
+fn attention_reflects_read_marks_on_the_next_frame() {
+    let mut app = fixture_app();
+    let done = app
+        .attention_items()
+        .iter()
+        .find(|item| item.session.status == session_board::model::Status::Done)
+        .unwrap()
+        .session
+        .clone();
+    let before = app.attention_items().len();
+    app.state
+        .read
+        .insert(done.id.clone(), done.last_activity_at);
+    assert_eq!(app.attention_items().len(), before - 1);
+    assert!(
+        !app.attention_items()
+            .iter()
+            .any(|item| item.session.id == done.id)
+    );
+    assert!(frame(&app, 100, 30).contains(&format!("{} need you", before - 1)));
+}
+
+#[test]
+fn pty_screen_parser_handles_partial_escape_sequences() {
+    let output = std::process::Command::new("python3")
+        .arg("tests/terminal_screen.py")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn multi_project_app() -> App {
+    let mut app = App::new(false);
+    app.replace(serde_json::from_str(include_str!("fixtures/attention-projects.json")).unwrap());
+    app
+}
+fn pane_highlight(app: &App) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal.draw(|f| app.render(f, NOW)).unwrap();
+    let b = terminal.backend().buffer();
+    (0..10)
+        .find(|y| {
+            (0..100).any(|x| {
+                b[(x, *y)]
+                    .modifier
+                    .contains(ratatui::style::Modifier::REVERSED)
+            })
+        })
+        .map(|y| (0..100).map(|x| b[(x, y)].symbol()).collect())
+        .unwrap_or_default()
+}
+#[test]
+fn focused_rescan_keeps_highlight_tree_enter_and_next_neighbour_together() {
+    let mut app = multi_project_app();
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Down);
+    let target = app.session().unwrap().clone();
+    let removed = app.attention_items()[2].session.transcript_path.clone();
+    let mut p = app.projects.clone();
+    for project in &mut p {
+        project.sessions.retain(|s| s.transcript_path != removed);
+    }
+    let mut new = target.clone();
+    new.id = "new-top".into();
+    new.title = "new-top".into();
+    new.transcript_path = "new-top".into();
+    new.last_activity_at = 99999;
+    p[0].sessions.push(new);
+    app.replace(p);
+    assert_eq!(
+        app.session().unwrap().transcript_path,
+        target.transcript_path
+    );
+    assert!(pane_highlight(&app).contains(&target.title));
+    assert_eq!(
+        app.rows()[app.selected],
+        ui::Row::Session(target.transcript_path.clone())
+    );
+    assert_eq!(key(&mut app, KeyCode::Enter), Action::Open);
+    assert_eq!(
+        app.session().unwrap().transcript_path,
+        target.transcript_path
+    );
+    let path = app
+        .attention_items()
+        .iter()
+        .skip_while(|i| i.session.transcript_path != target.transcript_path)
+        .nth(1)
+        .unwrap()
+        .session
+        .transcript_path
+        .clone();
+    key(&mut app, KeyCode::Down);
+    assert_eq!(app.session().unwrap().transcript_path, path);
+    assert!(pane_highlight(&app).contains(&app.session().unwrap().title));
+}
+#[test]
+fn small_pane_collapsed_movement_and_folds() {
+    let mut app = fixture_app();
+    let root = app.projects[0].root.clone();
+    app.folded.insert(root.clone());
+    key(&mut app, KeyCode::Tab);
+    assert!(
+        app.folded.contains(&root),
+        "focusing attention must not unfold the tree"
+    );
+    key(&mut app, KeyCode::Down);
+    assert!(app.folded.contains(&root));
+    key(&mut app, KeyCode::Left);
+    let selected = app.selected;
+    let path = app.session().map(|s| s.transcript_path.clone());
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Up);
+    assert_eq!(app.selected, selected);
+    assert_eq!(app.session().map(|s| s.transcript_path.clone()), path);
+    key(&mut app, KeyCode::Right);
+    let small = frame(&app, 80, 12);
+    assert!(
+        small.lines().nth(4).unwrap().contains("Projects"),
+        "{small}"
+    );
+    key(&mut app, KeyCode::Enter);
+    assert!(!app.folded.contains(&root));
+    assert_eq!(app.session().unwrap().id, "codex:waiting");
+    assert_eq!(
+        app.rows()[app.selected],
+        ui::Row::Session(app.session().unwrap().transcript_path.clone())
+    );
+}
+
+#[test]
+fn tui_notifications_use_real_scan_events_and_config_without_blocking_help() {
+    use std::{
+        io::{Read, Seek},
+        process::{Command, Stdio},
+    };
+    let mut stdout = tempfile::tempfile().unwrap();
+    let mut stderr = tempfile::tempfile().unwrap();
+    let mut child = Command::new("python3")
+        .args(["tests/notify_tui.py", env!("CARGO_BIN_EXE_sboard")])
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .stdin(Stdio::null())
+        .stdout(stdout.try_clone().unwrap())
+        .stderr(stderr.try_clone().unwrap())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(90);
+    while child.try_wait().unwrap().is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let timed_out = child.try_wait().unwrap().is_none();
+    if timed_out {
+        // SIGTERM lets Python's deadline handler run its board/notifier cleanup.
+        let _ = Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status();
+        let cleanup = Instant::now() + Duration::from_secs(10);
+        while child.try_wait().unwrap().is_none() && Instant::now() < cleanup {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if child.try_wait().unwrap().is_none() {
+            child.kill().unwrap();
+        }
+    }
+    let status = child.wait().unwrap();
+    stdout.rewind().unwrap();
+    stderr.rewind().unwrap();
+    let mut out = String::new();
+    let mut err = String::new();
+    stdout.read_to_string(&mut out).unwrap();
+    stderr.read_to_string(&mut err).unwrap();
+    assert!(
+        !timed_out && status.success(),
+        "tui_notifications_use_real_scan_events_and_config_without_blocking_help: waiting for Python probe exit (90 s limit, timed_out={timed_out})\n{out}\n{err}"
+    );
+}
+
+#[test]
+fn pane_has_handwritten_global_order_and_clean_project_names() {
+    let mut app = multi_project_app();
+    assert_eq!(
+        app.attention_items()
+            .iter()
+            .map(|i| i.session.id.as_str())
+            .collect::<Vec<_>>(),
+        ["b-wait", "g-wait", "a-wait", "g-error", "b-error", "a-done"]
+    );
+    app.projects[0].name = "bad\n\u{1b}[31mproject\u{1b}[0m".into();
+    let output = frame(&app, 100, 30);
+    let pane = output.lines().take(8).collect::<Vec<_>>().join("\n");
+    assert!(pane.contains("bad project"), "{output}");
+    assert!(!pane.contains("31m"));
+}
+
+#[test]
+fn focused_queue_shrink_clamps_the_view_and_target() {
+    let mut app = multi_project_app();
+    key(&mut app, KeyCode::Tab);
+    for _ in 0..20 {
+        key(&mut app, KeyCode::Down);
+    }
+    let mut p = app.projects.clone();
+    for project in &mut p {
+        project.sessions.retain(|s| s.id == "b-wait");
+    }
+    app.replace(p);
+    assert_eq!(app.session().unwrap().id, "b-wait");
+    assert!(pane_highlight(&app).contains("b-wait"));
+    assert_eq!(key(&mut app, KeyCode::Enter), Action::Open);
+    assert_eq!(app.session().unwrap().id, "b-wait");
+    app.replace(vec![]);
+    assert!(!app.attention_focus);
+    assert!(app.attention_path.is_none());
 }

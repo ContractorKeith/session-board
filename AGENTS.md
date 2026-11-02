@@ -9,8 +9,8 @@ MIT. "Done" for v1 is every row marked v1 in `docs/PLAN.md` §4 passing the acce
 §10 on Omarchy, the Mac Studio and GitHub Actions.
 
 ## Status
-M3 in review — 2026-11-01: Jump, resume, launch and fresh git worktrees in the TUI
-and CLI. M0–M2 merged; no TUI state is persisted until M4.
+M5 in review — attention pane and optional desktop notifications. M0–M3 merged;
+M4 persisted read marks integrate before M5 lands.
 
 ## Commands
 ```bash

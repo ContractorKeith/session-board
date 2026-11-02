@@ -3,7 +3,6 @@ import json
 from datetime import datetime, timezone
 import os
 import pty
-import select
 import shlex
 from pathlib import Path
 import shutil
@@ -13,6 +12,7 @@ import sys
 import tempfile
 import time
 import uuid
+from pty_probe import deadline, drain, reap
 
 BINARY = str(Path(sys.argv[1]).resolve())
 TMUX = shutil.which('tmux')
@@ -21,7 +21,9 @@ if not TMUX:
     sys.exit(0)
 
 
-def wait_for(predicate, message, seconds=2):
+def wait_for(predicate, message, seconds=10):
+    global stage
+    stage = message
     until = time.monotonic() + seconds
     while time.monotonic() < until:
         if predicate():
@@ -31,7 +33,9 @@ def wait_for(predicate, message, seconds=2):
 
 
 def case(mode):
-    with tempfile.TemporaryDirectory() as temp:
+    global stage
+    stage = 'setup'
+    with deadline(lambda: f'tmux.py::{mode}: waiting for {stage}'), tempfile.TemporaryDirectory() as temp:
         root = Path(temp).resolve()
         bindir = root / 'bin'
         bindir.mkdir()
@@ -100,6 +104,10 @@ def case(mode):
                 victim.mkdir()
                 target = 'a#b' if mode == 'hash-jump' else 'race'
                 run_tmux('new-session', '-d', '-s', target.replace('#', '##'), '-c', str(victim), 'sleep', '60')
+                # tmux can reply before the new pane child has entered its requested cwd.
+                wait_for(lambda: run_tmux('list-panes', '-t', '=' + target, '-F',
+                    '#{pane_current_path}').stdout.decode().strip() == str(victim),
+                    'target pane did not enter the fixture cwd')
                 capture = run_tmux('list-panes', '-t', '=' + target, '-F',
                     '#{n:session_name}:#{session_name}#{n:window_index}:#{window_index}#{n:pane_index}:#{pane_index}6:claude9:999999999#{n:pane_current_path}:#{pane_current_path}').stdout
                 (root / 'panes').write_bytes(capture)
@@ -134,8 +142,7 @@ exec "$REAL_TMUX" -S "$socket" "$@"
                 if client == 0:
                     os.execvpe(TMUX, tmux + ['attach', '-t', '=test'], env)
                 def connected():
-                    while select.select([master], [], [], 0)[0]:
-                        os.read(master, 65536)
+                    drain(master)
                     return bool(run_tmux('list-clients', '-F', '#{client_session}').stdout.strip())
                 wait_for(connected, 'private client did not attach')
                 wrapper = root / 'open'
@@ -173,26 +180,25 @@ exec "$REAL_TMUX" -S "$socket" "$@"
                 wrapper = root / 'board'
                 wrapper.write_text('#!/bin/sh\necho $$ > ' + shlex.quote(str(root / 'pid.tmp')) + '\nmv ' + shlex.quote(str(root / 'pid.tmp')) + ' ' + shlex.quote(str(root / 'pid')) + '\nexec ' + shlex.quote(BINARY) + '\n')
                 wrapper.chmod(0o755)
-                run_tmux('new-window', '-c', str(root), str(wrapper))
+                pane = run_tmux('new-window', '-P', '-F', '#{pane_id}', '-c', str(root), str(wrapper)).stdout.decode().strip()
                 wait_for(lambda: (root / 'pid').exists(), 'board did not launch')
                 pid = int((root / 'pid').read_text())
-                # Give the event reader time to enter its poll before closing the pty.
-                time.sleep(.25)
+                # A rendered frame acknowledges that sboard entered its terminal event loop.
+                wait_for(lambda: b'Projects' in run_tmux('capture-pane', '-p', '-t', pane).stdout,
+                         'board never rendered its first frame')
                 run_tmux('kill-server')
                 def gone():
-                    status = subprocess.run(['ps', '-p', str(pid), '-o', 'stat='], capture_output=True).stdout.decode().strip()
+                    status = subprocess.run(['ps', '-p', str(pid), '-o', 'stat='], capture_output=True, timeout=5).stdout.decode().strip()
                     return not status or status.startswith('Z')
-                wait_for(gone, 'sboard survived terminal closure for more than 2 seconds')
+                wait_for(gone, 'sboard survived terminal closure for more than 2 seconds', seconds=2)
             print(mode + ': private tmux regression passed')
         finally:
-            subprocess.run(tmux + ['kill-server'], capture_output=True, env=env)
+            subprocess.run(tmux + ['kill-server'], capture_output=True, env=env, timeout=5)
             if client is not None:
-                try: os.kill(client, signal.SIGTERM)
-                except ProcessLookupError: pass
-                os.waitpid(client, 0)
+                reap(client, f'tmux.py::{mode}: client cleanup')
                 os.close(master)
             if pid is not None:
-                status = subprocess.run(['ps', '-p', str(pid), '-o', 'comm='], capture_output=True).stdout.decode()
+                status = subprocess.run(['ps', '-p', str(pid), '-o', 'comm='], capture_output=True, timeout=5).stdout.decode()
                 if 'sboard' in status:
                     try:
                         os.kill(pid, signal.SIGKILL)
