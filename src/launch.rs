@@ -165,7 +165,7 @@ fn terminal_hung_up() -> bool {
 pub fn run(command: &mut Command) -> io::Result<()> {
     use std::{
         io::IsTerminal,
-        os::unix::process::CommandExt,
+        os::unix::process::{CommandExt, ExitStatusExt},
         sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
@@ -232,8 +232,32 @@ pub fn run(command: &mut Command) -> io::Result<()> {
                 }
                 forwarded_int = true;
             }
-            if let Some(status) = child.try_wait()? {
-                return if status.success() {
+            // Observe stops as well as exits: the shell tracks sboard's job group,
+            // while terminal input goes to the separate agent group.
+            let mut status = 0;
+            let waited =
+                unsafe { libc::waitpid(group, &mut status, libc::WNOHANG | libc::WUNTRACED) };
+            if waited == -1 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            if waited == group && libc::WIFSTOPPED(status) {
+                if tty {
+                    foreground(libc::STDIN_FILENO, parent_group)?;
+                }
+                // SIGSTOP also works when sboard is the leader of an orphaned PTY group.
+                unsafe { libc::raise(libc::SIGSTOP) };
+                if tty {
+                    foreground(libc::STDIN_FILENO, group)?;
+                }
+                unsafe { libc::kill(-group, libc::SIGCONT) };
+                continue;
+            }
+            if waited == group {
+                return if std::process::ExitStatus::from_raw(status).success() {
                     Ok(())
                 } else {
                     Err(io::Error::other("agent or tmux exited unsuccessfully"))

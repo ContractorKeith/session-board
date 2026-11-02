@@ -213,6 +213,9 @@ SIGHUP or terminal hangup forwards HUP to that group, allows 500 ms for cleanup,
 then kills remaining group members and bounds leader reaping to two seconds.
 sboard exits 129 without re-entering or restoring the terminal. Ctrl-C goes to
 the foreground child; normal child exit returns terminal ownership to sboard.
+When the child stops (for example Ctrl-Z), sboard returns terminal ownership and
+stops too, allowing the caller's shell to report the job. `fg` resumes sboard,
+which gives the agent the foreground terminal and continues its process group.
 
 TUI keys: `j k` move, `h l` fold, `Enter` open, `n` new, `w` new in worktree, `p` pin, `t` tag,
 `m` mark read, `a` archive toggle, `A` show archived, `s` cycle sort, `g` group by tag/project, `/` filter, `r` rescan,
