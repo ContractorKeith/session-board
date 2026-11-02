@@ -21,10 +21,7 @@ impl Source for Opencode {
 
     fn scan(&self, config: &Config) -> SourceScan {
         let mut result = SourceScan::default();
-        let Some(connection) = sqlite::open(&self.path, &mut result) else {
-            return result;
-        };
-        let mut scan = || -> rusqlite::Result<()> {
+        sqlite::scan(&self.path, &mut result, |connection, result| {
             // Keep one snapshot across session, message and part queries.
             connection.execute_batch("BEGIN")?;
             let mut statement = connection.prepare("SELECT id, directory, title, time_created, time_updated FROM session WHERE parent_id IS NULL ORDER BY id")?;
@@ -57,7 +54,7 @@ impl Source for Opencode {
                 if self.now.saturating_sub(last) > i64::from(config.window_days) * 86400 {
                     continue;
                 }
-                let (user, assistant, first_user, tail) = messages(&connection, &id, &mut result)?;
+                let (user, assistant, first_user, tail) = messages(connection, &id, result)?;
                 let status = status::derive(&tail, last, self.now);
                 if tail.pending && status == Status::Error {
                     result.status_reasons.push(format!(
@@ -85,10 +82,7 @@ impl Source for Opencode {
                 });
             }
             Ok(())
-        };
-        if let Err(error) = scan() {
-            sqlite::failed(&self.path, &error, &mut result);
-        }
+        });
         result
     }
 }

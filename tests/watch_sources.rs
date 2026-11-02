@@ -6,6 +6,7 @@ fn probe(mode: &str) {
     let temp = tempfile::tempdir().unwrap();
     let output = Command::new(std::env::current_exe().unwrap())
         .args(["--ignored", "--exact", "watch_round2_probe"])
+        .current_dir(temp.path())
         .env("SBOARD_WATCH_CASE", mode)
         .env("HOME", temp.path())
         .env("SBOARD_STATE_DIR", temp.path().join("state"))
@@ -15,7 +16,11 @@ fn probe(mode: &str) {
         .env("GROK_HOME", temp.path().join("custom-grok"))
         .env(
             "OPENCODE_DB",
-            temp.path().join("custom-code/opencode-beta.db"),
+            if mode == "relative" {
+                "opencode.db".into()
+            } else {
+                temp.path().join("custom-code/opencode-beta.db")
+            },
         )
         .env_remove("XDG_DATA_HOME")
         .output()
@@ -48,7 +53,11 @@ fn watch_round2_probe() {
     fs::create_dir_all(home.join("claude/projects")).unwrap();
     fs::create_dir_all(home.join("codex/sessions")).unwrap();
     let grok = home.join("custom-grok/sessions/session_search.sqlite");
-    let code = home.join("custom-code/opencode-beta.db");
+    let code = if mode == "relative" {
+        home.join("opencode.db")
+    } else {
+        home.join("custom-code/opencode-beta.db")
+    };
     if mode != "missing" {
         fs::create_dir_all(grok.parent().unwrap()).unwrap();
         fs::create_dir_all(code.parent().unwrap()).unwrap();
@@ -110,4 +119,9 @@ fn watch_round2_probe() {
                 .any(|s| s.title == "Changed by watcher test")
         );
     }
+}
+
+#[test]
+fn issue85_relative_opencode_database_is_watched() {
+    probe("relative");
 }

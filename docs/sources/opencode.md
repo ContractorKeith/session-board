@@ -5,7 +5,8 @@ OpenCode installed. Store resolution is `OPENCODE_DB` first (including a
 channel-specific filename), then `$XDG_DATA_HOME/opencode/opencode.db`, then
 `~/.local/share/opencode/opencode.db`. Empty overrides are unset. The shared
 `source::database_paths` resolver supplies the registry, doctor and the watcher's
-parent directory, with missing-root warnings and reattachment. Legacy JSON storage
+parent directory, with missing-root warnings and reattachment. Relative store
+paths resolve against the current directory in that shared resolver. Legacy JSON storage
 is unsupported.
 
 Schema references retrieved for M6:
@@ -67,10 +68,15 @@ schema failures warn, count a skipped store and discard all partial sessions.
 The `permission`, `project`, migrations, model, tokens and agent-owned archive
 fields are unused. sboard owns its own archive.
 
-SQLite uses the shared read-only helper described in [grok.md](grok.md): existing
-WAL/SHM or rollback journal selects normal `mode=ro` locking; no sidecars selects
-`immutable=1`. Normal WAL scans see committed frames without a warning. Busy/locked
-stores are skipped, never retried with immutable. Schema drift fails soft; live
+SQLite uses the shared read-only scan wrapper described in [grok.md](grok.md).
+Only an existing `-wal` selects normal `mode=ro` locking; **creating or updating
+`-shm` alongside that WAL is allowed SQLite WAL protocol. Creating `-wal` or
+`-journal` is forbidden.** With no WAL use `immutable=1`; an orphan SHM or stale
+zero-byte journal does not change that decision. A nonempty rollback journal
+without WAL is skipped with a warning to exclude uncommitted spilled pages.
+After an immutable scan, any change in database size/mtime or sidecar set/metadata
+discards all sessions and warns. Normal WAL scans see committed frames without
+a warning. Busy/locked stores are skipped. Schema drift fails soft; live
 verification is still required before claiming compatibility with an installed
 OpenCode version.
 
@@ -100,3 +106,8 @@ APIError (error), boolean error/completed/finish and string completed markers
 (skipped line; preceding user remains pending). The same regressions cover
 invalid IDs/NUL cwds, overrides and a corrupt table leaf; `tests/watch_sources.rs`
 checks OpenCode directory updates and reattachment through `Scans::start`.
+
+Round-3 shared-wrapper tests cover a spilling writer starting after the schema
+query and independent size/mtime/sidecar changes. Byte snapshots now capture SHM
+and explicitly allow its creation/modification only when a WAL exists. Relative
+`OPENCODE_DB=opencode.db` is tested through doctor and a live `Scans::start` probe.

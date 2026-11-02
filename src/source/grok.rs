@@ -19,14 +19,11 @@ impl Source for Grok {
 
     fn scan(&self, config: &Config) -> SourceScan {
         let mut result = SourceScan::default();
-        let Some(connection) = sqlite::open(&self.path, &mut result) else {
-            return result;
-        };
-        let mut scan = || -> rusqlite::Result<()> {
+        sqlite::scan(&self.path, &mut result, |connection, result| {
             let cutoff = self
                 .now
                 .saturating_sub(i64::from(config.window_days) * 86400);
-            let mut statement = connection.prepare("SELECT session_id, cwd, updated_at, title, substr(content, -8192), substr(ltrim(content, ?3), 1, 8192) FROM session_docs WHERE (updated_at < 1000000000000 AND updated_at >= ?1) OR updated_at >= max(1000000000000, ?2)")?;
+            let mut statement = connection.prepare("SELECT session_id, cwd, updated_at, title, substr(CAST(content AS BLOB), -8192), CAST(substr(ltrim(content, ?3), 1, 8192) AS BLOB) FROM session_docs WHERE typeof(updated_at) != 'integer' OR (updated_at < 1000000000000 AND updated_at >= ?1) OR updated_at >= max(1000000000000, ?2)")?;
             let whitespace = "\t\n\r \u{b}\u{c}\u{85}\u{a0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}";
             let rows = statement.query_map(
                 rusqlite::params![cutoff, cutoff.saturating_mul(1000), whitespace],
@@ -36,8 +33,8 @@ impl Source for Grok {
                         row.get::<_, String>(1)?,
                         row.get::<_, i64>(2)?,
                         row.get::<_, Option<String>>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<Vec<u8>>>(4)?,
+                        row.get::<_, Option<Vec<u8>>>(5)?,
                     ))
                 },
             )?;
@@ -68,12 +65,13 @@ impl Source for Grok {
                     ));
                     time = self.now;
                 }
-                let content = content.unwrap_or_default();
+                let bytes = content.unwrap_or_default();
+                let content = String::from_utf8_lossy(&bytes);
                 let title = title
                     .map(|s| read::title(&s))
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| {
-                        head.unwrap_or_default()
+                        String::from_utf8_lossy(&head.unwrap_or_default())
                             .lines()
                             .map(read::title)
                             .find(|s| !s.is_empty())
@@ -101,10 +99,7 @@ impl Source for Grok {
                 });
             }
             Ok(())
-        };
-        if let Err(error) = scan() {
-            sqlite::failed(&self.path, &error, &mut result);
-        }
+        });
         result
     }
 }

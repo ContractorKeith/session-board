@@ -352,14 +352,7 @@ fn active_wal_database_and_frames_are_untouched() {
             .unwrap()
             .map(|entry| {
                 let entry = entry.unwrap();
-                (
-                    entry.file_name(),
-                    if entry.file_name().to_string_lossy().ends_with("-shm") {
-                        Vec::new()
-                    } else {
-                        fs::read(entry.path()).unwrap()
-                    },
-                )
+                (entry.file_name(), fs::read(entry.path()).unwrap())
             })
             .collect();
         files.sort_by(|a, b| a.0.cmp(&b.0));
@@ -378,7 +371,28 @@ fn active_wal_database_and_frames_are_untouched() {
         "Uncheckpointed"
     );
     assert!(result.warnings.is_empty());
-    assert_eq!(snapshot(), before);
+    let after = snapshot();
+    assert_eq!(after.len(), before.len());
+    for ((name, bytes), (after_name, after_bytes)) in before.iter().zip(&after) {
+        assert_eq!(name, after_name);
+        if name.to_string_lossy().ends_with("-shm") {
+            // Full SHM bytes are captured. SQLite may rewrite them only as
+            // part of the WAL protocol while an existing WAL is present.
+            assert!(
+                before
+                    .iter()
+                    .any(|(n, _)| n.to_string_lossy().ends_with("-wal"))
+            );
+            assert!(
+                after
+                    .iter()
+                    .any(|(n, _)| n.to_string_lossy().ends_with("-wal"))
+            );
+            assert!(!bytes.is_empty() && !after_bytes.is_empty());
+        } else {
+            assert!(bytes == after_bytes, "SQLite changed {:?}", name);
+        }
+    }
     drop(writer);
     no_sidecars(&path);
 }

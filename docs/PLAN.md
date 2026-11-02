@@ -75,7 +75,7 @@ v1 is done when every row marked **v1** in ยง4 passes the acceptance checks in ย
 | 17 | Read and unread; archive project or session; `a` toggles archived view | v1 | M4 | Unread is set when a session changes while not selected |
 | 18 | Attention queue: top pane listing waiting, done-unread and error sessions | v1 | M5 | Same ordering rule in `list --status attention` |
 | 19 | Desktop notification on status change to waiting, done or error (optional) | v1 | M5 | `notify-send` on Linux, `osascript` on macOS; off by default |
-| 20 | Grok source: `~/.grok/sessions/session_search.sqlite` `session_docs` | v1 | M6 | Read-only SQLite, `immutable=1` |
+| 20 | Grok source: `~/.grok/sessions/session_search.sqlite` `session_docs` | v1 | M6 | Read-only SQLite; existing WAL permits SHM creation/updates, never new WAL/journal; no WAL uses checked `immutable=1` |
 | 21 | OpenCode source: `~/.local/share/opencode/opencode.db` | v1 | M6 | Fixture-only until a live install exists |
 | 22 | `v0.1.0`: Linux x86_64 and aarch64, macOS aarch64 binaries, checksums, install notes | v1 | M7 | `cargo-dist` or a release workflow; Homebrew tap later |
 | 23 | Token and cost rollup per project and day from transcripts | Later | | v0.2; SQLite index, microdollar ledger, `costs sync` |

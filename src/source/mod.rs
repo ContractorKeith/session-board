@@ -62,7 +62,16 @@ pub fn database_paths(home: &std::path::Path) -> (std::path::PathBuf, std::path:
             .unwrap_or_else(|| home.join(".local/share"))
             .join("opencode/opencode.db")
     });
-    (grok, opencode)
+    let absolute = |path: std::path::PathBuf| {
+        if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| home.to_path_buf())
+                .join(path)
+        }
+    };
+    (absolute(grok), absolute(opencode))
 }
 
 pub fn registry_at(home: &std::path::Path) -> Registry {

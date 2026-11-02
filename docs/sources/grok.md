@@ -2,8 +2,9 @@
 
 Store: `${GROK_HOME:-~/.grok}/sessions/session_search.sqlite`. Empty overrides
 fall back to HOME. The shared `source::database_paths` resolver supplies this
-path to the registry, doctor and watcher; the watcher watches its parent directory
-and reattaches after it appears or is recreated.
+path to the registry, doctor and watcher; relative overrides resolve against the
+current directory before use. The watcher watches the parent directory and
+reattaches after it appears or is recreated.
 
 Read `session_docs` columns `session_id`, `cwd`, `updated_at`, `title`, `content`;
 ignore `content_hash` and the FTS5 mirror. IDs must match `[A-Za-z0-9._:-]+` and
@@ -15,13 +16,16 @@ paths. Titles use the shared printable-line sanitizer.
 `updated_at` is Unix seconds, or milliseconds when **at least** 10^12. It supplies
 both start and activity time because the index has no creation time. Timestamps
 more than one hour in the future are clamped to scan time with a path/id warning;
-negative or invalid values skip/count rows. The SQL window predicate compares
-seconds and milliseconds separately before reading content. Doctor scans all ages.
+negative or invalid values skip/count rows. NULL and non-integer timestamps
+are included for conversion/counting even when the window predicate would exclude
+them. The SQL window predicate compares seconds and milliseconds separately
+before reading content. Doctor scans all ages.
 
-SQL selects `substr(content, -8192)` and a bounded title candidate from the first
-non-blank content line. The full content never enters Rust. Prefer the cleaned
+SQL selects `substr(CAST(content AS BLOB), -8192)` and a bounded title candidate
+from the first non-blank content line. The full content never enters Rust. Prefer the cleaned
 `title`, then the first non-blank content line (60 characters), then the native ID.
-`last_assistant_text` is the UTF-8 bounded latest 8 KiB of the flat content; it can
+`last_assistant_text` is the latest 8 KiB of the flat content, decoded lossily
+and bounded again on a UTF-8 boundary; embedded NUL bytes are retained. It can
 contain tool names and is not guaranteed assistant prose. `last_user_text` is
 empty: the search index has no reliable per-turn roles, so duplicating it would
 imply knowledge we do not have.
@@ -32,16 +36,23 @@ flat search index, even if content ends in a question. Resume is
 `grok --resume=<session_id>`; the installed Grok parser accepts `=` (verified with
 `grok --resume= --help`, which exits without resuming). Transcript path is the DB.
 
-SQLite opens READ_ONLY / NO_MUTEX with a 200 ms busy timeout. Existing `-wal` or
-`-shm` selects plain `mode=ro`, reading committed WAL frames with SQLite's normal
-locking; a rollback `-journal` also selects normal locking so spilled uncommitted
-pages cannot leak through. With no sidecars, `mode=ro&immutable=1` avoids creating
-WAL/SHM files on a stopped store. No `nolock`, copies or immutable retry after a
-busy/locked read. Normal scans print no SQLite warning. Missing stores increment
-skipped stores silently. Busy/locked/corrupt/schema failures warn with the path,
-count one skipped store and discard partial sessions. Row conversion failures
-skip/count the row; SQLite step/I/O errors fail the store. No new sidecars or
-journal files are created on either normal path.
+SQLite opens READ_ONLY / NO_MUTEX with a 200 ms busy timeout. An existing `-wal`
+selects plain `mode=ro`, reading committed frames with SQLite's normal locking.
+**Creating or updating `-shm` alongside an existing WAL is permitted SQLite WAL
+protocol. Creating a `-wal` or `-journal` is not permitted.** A zero-byte stale
+`-journal` does not select normal access. With no WAL, use `mode=ro&immutable=1`,
+even if an orphan SHM or zero-byte journal exists. Nonempty rollback journals
+without WAL are conservatively skipped with a locked-store warning, rather than
+risk reading spilled uncommitted pages or performing recovery.
+
+Both sources use one scan wrapper. Before immutable access it records database
+size/mtime and the WAL/SHM/journal set and metadata. After the complete scan it
+compares them again: any change or metadata error discards all sessions, counts
+one skipped store and warns with the path. There is no retry through a writer's
+lock. This catches a writer starting after the initial sidecar decision. Normal
+stable scans print no SQLite warning. Missing stores increment skipped stores
+silently. Busy/locked/corrupt/schema failures warn and discard partial sessions.
+Row conversion failures skip/count the row; SQLite step/I/O errors fail the store.
 
 Fixtures are committed **SQL**, generated in temp directories by
 `tests/sqlite_sources.rs`, clock 2026-11-01 12:00 UTC:
@@ -71,3 +82,12 @@ took 1.480 seconds. Retained preview memory still scales with in-window sessions
 this measurement does not claim a constant memory bound for 100,000 active rows.
 The real Omarchy store exists but is empty; macOS skeptic sampling supplied the
 two-row live evidence for this round.
+
+Round-3 regressions: `tests/sqlite_round3.rs` covers a stale zero-byte journal,
+orphan committed WAL with and without SHM, full byte snapshots with the explicit
+SHM exception, NULL/non-integer timestamp counts, relative OPENCODE_DB discovery,
+and embedded-NUL/invalid-UTF-8 byte tails. `source::sqlite::tests` starts a
+pre-opened spilling writer after the first schema query, confirms the candidate
+contains an uncommitted title, and proves the scan wrapper discards it. Separate
+checks change only database size, only mtime, or only the sidecar set. The watcher
+probe also verifies bare relative `OPENCODE_DB=opencode.db` refreshes automatically.
