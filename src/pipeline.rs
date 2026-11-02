@@ -72,6 +72,10 @@ pub fn run(roots: &mut ProjectRoots, options: &Options) -> io::Result<Outcome> {
     let mut result = scan::scan(&source::registry(), &config, &state, |cwd| {
         roots.resolve(cwd)
     });
+    let panes = crate::tmux::discover(&config.tmux.socket);
+    for session in result.projects.iter_mut().flat_map(|p| &mut p.sessions) {
+        session.pane = crate::tmux::matching(session, &panes).map(crate::tmux::Pane::target);
+    }
     cli::filter(
         &mut result.projects,
         &state,

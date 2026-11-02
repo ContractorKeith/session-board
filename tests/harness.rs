@@ -279,6 +279,7 @@ fn project_roots_git_nested_worktree_missing_and_cached() {
 /// All subprocesses receive both overrides, never touching the owner's sboard files.
 fn command(temp: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_sboard"));
+    common::no_tmux(&mut command, temp);
     command
         .env("CLAUDE_CONFIG_DIR", temp.join(".claude"))
         .env("CODEX_HOME", temp.join(".codex"))
@@ -410,7 +411,9 @@ fn empty_overrides_count_as_unset() {
     let cwd = temp.path().join("cwd");
     fs::create_dir(&cwd).unwrap();
     fs::write(cwd.join("config.toml"), "roots = ['/from-cwd']\n").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_sboard"))
+    let mut isolated = Command::new(env!("CARGO_BIN_EXE_sboard"));
+    common::no_tmux(&mut isolated, temp.path());
+    let output = isolated
         .env("HOME", &home)
         .env("CLAUDE_CONFIG_DIR", "")
         .env("CODEX_HOME", "")

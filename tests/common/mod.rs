@@ -32,3 +32,19 @@ pub fn git(directory: &Path, args: &[&str]) -> String {
         .trim_end_matches('\n')
         .into()
 }
+
+/// Isolate every binary scan from the owner's tmux server.
+pub fn no_tmux(command: &mut Command, root: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = root.join("fake-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let script = bin.join("tmux");
+    std::fs::write(&script, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    command
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .env_remove("TMUX");
+}

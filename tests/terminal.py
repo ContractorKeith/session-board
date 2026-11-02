@@ -60,6 +60,19 @@ def case(mode):
                    CLAUDE_CONFIG_DIR=str(root / 'claude'), CODEX_HOME=str(root / 'codex'),
                    SBOARD_STATE_DIR=str(root / 'state'), SBOARD_CONFIG_DIR=str(root / 'config'))
         if mode == 'unwatched': (root / 'codex/sessions').rmdir()
+        bindir = root / 'bin'
+        bindir.mkdir()
+        (bindir / 'tmux').write_text('#!/bin/sh\nexit 1\n')
+        (bindir / 'tmux').chmod(0o755)
+        (bindir / 'claude').write_text('#!/bin/sh\nstty -a > "$TERMINAL_FLAGS"\nprintf "agent returned\\n"\n')
+        (bindir / 'claude').chmod(0o755)
+        env['PATH'] = str(bindir) + os.pathsep + env['PATH']
+        env['TERMINAL_FLAGS'] = str(root / 'flags')
+        env.pop('TMUX', None)
+        if mode in ('resume', 'launch'):
+            for row in rows:
+                if 'cwd' in row: row['cwd'] = str(root)
+            (root / 'claude/projects/project/session.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
         env.pop('NO_COLOR', None)
         if mode.startswith('color-'): env['NO_COLOR'] = '1' if mode == 'color-off' else ''
         env.pop('SBOARD_SCAN_PROBE', None)
@@ -120,6 +133,21 @@ def case(mode):
                 (root / 'codex/sessions').mkdir()
                 wait_for(lambda: 'unwatched:' not in screen(output) and '1 projects' in screen(output), 'reattached root remained unwatched')
                 os.write(master, b'q')
+            elif mode in ('resume', 'launch'):
+                wait_for(lambda: '1 projects' in screen(output), 'initial scan did not arrive')
+                if mode == 'resume':
+                    os.write(master, b'j\r')
+                else:
+                    os.write(master, b'n')
+                    wait_for(lambda: 'Agent: c claude_code' in screen(output), 'no agent prompt')
+                    print(screen(output))
+                    os.write(master, b'c')
+                wait_for(lambda: (root / 'flags').exists() and output.count(b'\x1b[?1049h') >= 2, 'agent did not return to alternate screen')
+                flags = (root / 'flags').read_text()
+                assert re.search(r'(?<!-)\bicanon\b', flags), flags
+                assert re.search(r'(?<!-)\becho\b', flags), flags
+                wait_for(lambda: ('resumed ' if mode == 'resume' else 'launched ') in screen(output), 'outcome missing after return')
+                os.write(master, b'q')
             elif mode in ('q', 'idle', 'color-empty', 'color-off'):
                 wait_for(lambda: '1 projects' in screen(output), 'initial scan did not arrive')
                 if mode == 'idle':
@@ -152,5 +180,5 @@ def case(mode):
             os.close(master)
             os.close(slave)
 
-for mode in ([os.environ['SBOARD_PTY_CASE']] if 'SBOARD_PTY_CASE' in os.environ else ['TERM'] if PROBE is None else ['TERM', 'INT', 'HUP', 'q', 'scan-panic', 'error', 'hook', 'dumb', 'stdin', 'idle', 'color-empty', 'color-off', 'unwatched']):
+for mode in ([os.environ['SBOARD_PTY_CASE']] if 'SBOARD_PTY_CASE' in os.environ else ['TERM'] if PROBE is None else ['TERM', 'INT', 'HUP', 'q', 'scan-panic', 'error', 'hook', 'dumb', 'stdin', 'idle', 'color-empty', 'color-off', 'unwatched', 'resume', 'launch']):
     case(mode)

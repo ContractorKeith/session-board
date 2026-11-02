@@ -32,6 +32,18 @@ fn main() {
 fn run(cli: Cli) -> io::Result<i32> {
     match cli.command {
         None => ui::run(),
+        Some(Commands::Open { session_id }) => {
+            cli::open(&session_id)?;
+            Ok(0)
+        }
+        Some(Commands::New {
+            project_path,
+            agent,
+            worktree,
+        }) => {
+            cli::new(&project_path, agent, worktree.as_deref())?;
+            Ok(0)
+        }
         Some(Commands::Version) => {
             writeln!(io::stdout().lock(), "{}", env!("CARGO_PKG_VERSION"))?;
             Ok(0)

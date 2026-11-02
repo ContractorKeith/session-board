@@ -35,6 +35,18 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Jump to a live pane or resume a recorded session.
+    Open {
+        session_id: String,
+    },
+    /// Launch a new session in a project or fresh worktree.
+    New {
+        project_path: PathBuf,
+        #[arg(long, value_enum, default_value = "claude_code")]
+        agent: LaunchAgent,
+        #[arg(long)]
+        worktree: Option<String>,
+    },
     Version,
 }
 
@@ -157,6 +169,16 @@ pub fn doctor(out: &mut impl Write, home: &Path, json: bool) -> io::Result<()> {
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&stores)?)?;
     } else {
+        let (config, _) = crate::config::Config::load(&crate::config::Config::path()?)?;
+        writeln!(
+            out,
+            "tmux: {}",
+            if crate::tmux::discover(&config.tmux.socket).is_empty() {
+                "absent (no reachable panes)"
+            } else {
+                "reachable"
+            }
+        )?;
         for store in stores {
             writeln!(
                 out,
@@ -293,4 +315,49 @@ pub fn list(
 /// Diagnostics must not prevent successful stdout when stderr is closed or full.
 pub fn warn(message: &str) {
     let _ = writeln!(io::stderr().lock(), "sboard: {message}");
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum LaunchAgent {
+    #[value(name = "claude_code")]
+    ClaudeCode,
+    Codex,
+}
+impl LaunchAgent {
+    pub fn agent(self) -> crate::model::Agent {
+        match self {
+            Self::ClaudeCode => crate::model::Agent::ClaudeCode,
+            Self::Codex => crate::model::Agent::Codex,
+        }
+    }
+}
+pub fn open(id: &str) -> io::Result<()> {
+    let result = crate::pipeline::run(
+        &mut crate::project::ProjectRoots::default(),
+        &crate::pipeline::Options {
+            all: true,
+            ..Default::default()
+        },
+    )?;
+    let session = result
+        .scan
+        .projects
+        .iter()
+        .flat_map(|p| &p.sessions)
+        .find(|s| s.id == id)
+        .ok_or_else(|| io::Error::other(format!("session not found: {id}")))?;
+    let (config, _) = crate::config::Config::load(&crate::config::Config::path()?)?;
+    crate::launch::open(session, &config.tmux.socket)?;
+    Ok(())
+}
+pub fn new(project: &Path, agent: LaunchAgent, branch: Option<&str>) -> io::Result<()> {
+    crate::launch::directory(project)?;
+    let (config, _) = crate::config::Config::load(&crate::config::Config::path()?)?;
+    let cwd = if let Some(branch) = branch {
+        crate::launch::worktree(project, branch)?
+    } else {
+        project.canonicalize()?
+    };
+    crate::launch::launch(&cwd, agent.agent(), &config.tmux.socket)?;
+    Ok(())
 }

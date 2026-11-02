@@ -6,13 +6,15 @@ project, shows working / waiting / idle / error / done, jumps to the tmux pane o
 session, and launches new sessions in a project or a fresh git worktree. Observes agents; never
 owns them. MIT.
 
-Status: M2 in review: project tree, session detail and live refresh over the Claude Code
+Status: M3 in review: jump, resume, launch and fresh worktrees over the Claude Code
 and Codex sources. See `docs/PLAN.md` for milestones and
 `AGENTS.md` for commands. The package is `session-board`; the binary is `sboard`.
 
 Run `sboard` in a terminal to see the project tree and session details; stores refresh live; config, state and Codex title-index edits need `r`.
 Use `j`/`k` or arrows to move, `h`/`l` to fold/unfold, and `r` to rescan.
-Press `?` for help, `q` or Ctrl-C to quit; Enter shows “open lands in M3”.
+Press `?` for help, `q` or Ctrl-C to quit.
+Enter jumps or resumes; `n` launches in the selected project; `w` launches in a fresh git worktree.
+Use `sboard open <session-id>` or `sboard new <project-path> [--agent claude_code|codex] [--worktree <branch>]`.
 
 ```bash
 sboard list --json

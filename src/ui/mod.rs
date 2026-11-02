@@ -1,4 +1,5 @@
 mod detail;
+mod open;
 mod tree;
 
 use crate::watch::Scans;
@@ -47,6 +48,9 @@ pub struct App {
 pub enum Action {
     None,
     Rescan,
+    Open,
+    New,
+    Worktree,
     Quit,
 }
 impl App {
@@ -63,6 +67,23 @@ impl App {
             scan_warnings: vec![],
             watch_warnings: vec![],
         }
+    }
+    pub(super) fn suspend<T>(
+        &mut self,
+        terminal: &mut DefaultTerminal,
+        f: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<T> {
+        restore();
+        let result = f();
+        terminal::enable_raw_mode()?;
+        execute!(io::stdout(), EnterAlternateScreen)?;
+        execute!(
+            io::stdout(),
+            terminal::Clear(terminal::ClearType::All),
+            crossterm::cursor::MoveTo(0, 0)
+        )?;
+        terminal.resize(terminal.size()?.into())?;
+        result
     }
     pub fn rows(&self) -> Vec<Row> {
         let mut rows = vec![];
@@ -152,7 +173,9 @@ impl App {
                     }
                 }
             }
-            KeyCode::Enter => self.message = "open lands in M3".into(),
+            KeyCode::Enter => return Action::Open,
+            KeyCode::Char('n') => return Action::New,
+            KeyCode::Char('w') => return Action::Worktree,
             KeyCode::Char('r') => {
                 self.message = "scanning…".into();
                 return Action::Rescan;
@@ -168,12 +191,7 @@ impl App {
             .chain(&self.scan_warnings)
             .collect();
         match warnings.first() {
-            Some(first)
-                if self.message.starts_with("scan:") || self.message.starts_with("scan worker") =>
-            {
-                format!("{} | {} warnings: {first}", self.message, warnings.len())
-            }
-            Some(first) => format!("{} warnings: {first}", warnings.len()),
+            Some(first) => format!("{} | {} warnings: {first}", self.message, warnings.len()),
             None => self.message.clone(),
         }
     }
@@ -187,7 +205,7 @@ impl App {
         let vertical =
             Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(frame.area());
         if self.help {
-            frame.render_widget(Paragraph::new("j / k / ↑ / ↓  move\nPgUp / PgDn / Home / End  page / ends\nh / l / ← / →  fold / unfold project\nEnter  open lands in M3\nr  rescan\n?  toggle help\nq / Ctrl-C  quit").block(Block::default().borders(Borders::ALL).title("Help")), vertical[0]);
+            frame.render_widget(Paragraph::new("j / k / ↑ / ↓  move\nPgUp / PgDn / Home / End  page / ends\nh / l / ← / →  fold / unfold project\nEnter open · n new · w new in worktree\nr  rescan\n?  toggle help\nq / Ctrl-C  quit").block(Block::default().borders(Borders::ALL).title("Help")), vertical[0]);
         } else {
             let panes =
                 Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
@@ -282,6 +300,7 @@ fn event_loop(
     scans: &Scans,
     signal: &AtomicUsize,
 ) -> io::Result<()> {
+    let mut open = open::Open::default();
     let mut dirty = true;
     let mut worker_dead = false;
     let mut next_age = Instant::now();
@@ -326,6 +345,9 @@ fn event_loop(
             next_age = Instant::now() + Duration::from_secs(1);
         }
         if dirty {
+            if let Some(text) = open.text() {
+                app.message = text;
+            }
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -337,10 +359,15 @@ fn event_loop(
         if event::poll(Duration::from_millis(50))? {
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
+                    if open.key(app, key, terminal)? {
+                        dirty = true;
+                        continue;
+                    }
                     match app.key(key) {
                         Action::Quit => return Ok(()),
                         Action::Rescan => app.request_scan(scans),
                         Action::None => {}
+                        action => open.action(app, action, terminal)?,
                     }
                     dirty = true;
                 }
