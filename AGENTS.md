@@ -9,9 +9,8 @@ MIT. "Done" for v1 is every row marked v1 in `docs/PLAN.md` §4 passing the acce
 §10 on Omarchy, the Mac Studio and GitHub Actions.
 
 ## Status
-M2 in review — 2026-11-01: Ratatui project tree, session detail, help and navigation,
-background scans and a debounced recursive store watcher. M0 and M1 merged.
-Enter remains a placeholder for M3; no TUI state is persisted until M4.
+M3 in review — 2026-11-01: Jump, resume, launch and fresh git worktrees in the TUI
+and CLI. M0–M2 merged; no TUI state is persisted until M4.
 
 ## Commands
 ```bash

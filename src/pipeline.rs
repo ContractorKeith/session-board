@@ -72,6 +72,10 @@ pub fn run(roots: &mut ProjectRoots, options: &Options) -> io::Result<Outcome> {
     let mut result = scan::scan(&source::registry(), &config, &state, |cwd| {
         roots.resolve(cwd)
     });
+    warnings.extend(crate::tmux::refresh(
+        &mut result.projects,
+        &config.tmux.socket,
+    ));
     cli::filter(
         &mut result.projects,
         &state,

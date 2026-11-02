@@ -1,4 +1,5 @@
 mod detail;
+mod open;
 mod tree;
 
 use crate::watch::Scans;
@@ -37,6 +38,7 @@ pub struct App {
     pub selected: usize,
     pub help: bool,
     pub message: String,
+    pub summary: String,
     pub color: bool,
     pub list: RefCell<ratatui::widgets::ListState>,
     pub page_size: Cell<usize>,
@@ -47,6 +49,9 @@ pub struct App {
 pub enum Action {
     None,
     Rescan,
+    Open,
+    New,
+    Worktree,
     Quit,
 }
 impl App {
@@ -56,13 +61,32 @@ impl App {
             folded: HashSet::new(),
             selected: 0,
             help: false,
-            message: "scanning…".into(),
+            message: String::new(),
+            summary: "scanning…".into(),
             color,
             list: RefCell::new(ratatui::widgets::ListState::default()),
             page_size: Cell::new(10),
             scan_warnings: vec![],
             watch_warnings: vec![],
         }
+    }
+    pub(super) fn suspend<T>(
+        &mut self,
+        terminal: &mut DefaultTerminal,
+        f: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<T> {
+        restore();
+        let result = f();
+        session_board::launch::restore_terminal();
+        terminal::enable_raw_mode()?;
+        execute!(io::stdout(), EnterAlternateScreen)?;
+        execute!(
+            io::stdout(),
+            terminal::Clear(terminal::ClearType::All),
+            crossterm::cursor::MoveTo(0, 0)
+        )?;
+        terminal.resize(terminal.size()?.into())?;
+        result
     }
     pub fn rows(&self) -> Vec<Row> {
         let mut rows = vec![];
@@ -152,9 +176,11 @@ impl App {
                     }
                 }
             }
-            KeyCode::Enter => self.message = "open lands in M3".into(),
+            KeyCode::Enter => return Action::Open,
+            KeyCode::Char('n') => return Action::New,
+            KeyCode::Char('w') => return Action::Worktree,
             KeyCode::Char('r') => {
-                self.message = "scanning…".into();
+                self.summary = "scanning…".into();
                 return Action::Rescan;
             }
             _ => {}
@@ -162,19 +188,19 @@ impl App {
         Action::None
     }
     pub fn status_text(&self) -> String {
+        let message = if self.message.is_empty() {
+            &self.summary
+        } else {
+            &self.message
+        };
         let warnings: Vec<_> = self
             .watch_warnings
             .iter()
             .chain(&self.scan_warnings)
             .collect();
         match warnings.first() {
-            Some(first)
-                if self.message.starts_with("scan:") || self.message.starts_with("scan worker") =>
-            {
-                format!("{} | {} warnings: {first}", self.message, warnings.len())
-            }
-            Some(first) => format!("{} warnings: {first}", warnings.len()),
-            None => self.message.clone(),
+            Some(first) => format!("{} | {} warnings: {first}", message, warnings.len()),
+            None => message.clone(),
         }
     }
     pub fn request_scan(&mut self, scans: &Scans) {
@@ -187,7 +213,7 @@ impl App {
         let vertical =
             Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(frame.area());
         if self.help {
-            frame.render_widget(Paragraph::new("j / k / ↑ / ↓  move\nPgUp / PgDn / Home / End  page / ends\nh / l / ← / →  fold / unfold project\nEnter  open lands in M3\nr  rescan\n?  toggle help\nq / Ctrl-C  quit").block(Block::default().borders(Borders::ALL).title("Help")), vertical[0]);
+            frame.render_widget(Paragraph::new("j / k / ↑ / ↓  move\nPgUp / PgDn / Home / End  page / ends\nh / l / ← / →  fold / unfold project\nEnter open · n new · w new in worktree\nr  rescan\n?  toggle help\nq / Ctrl-C  quit").block(Block::default().borders(Borders::ALL).title("Help")), vertical[0]);
         } else {
             let panes =
                 Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
@@ -215,6 +241,7 @@ impl Drop for TerminalGuard {
 }
 fn restore() {
     let _ = terminal::disable_raw_mode();
+    session_board::launch::restore_terminal();
     let _ = execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
 }
 pub fn color_enabled(value: Option<&std::ffi::OsStr>) -> bool {
@@ -261,6 +288,7 @@ pub fn run() -> io::Result<i32> {
 pub(crate) fn terminal_session(
     operation: impl FnOnce(&mut DefaultTerminal) -> io::Result<()>,
 ) -> io::Result<()> {
+    session_board::launch::capture_terminal()?;
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if std::thread::current().name() == Some("main") {
@@ -282,12 +310,36 @@ fn event_loop(
     scans: &Scans,
     signal: &AtomicUsize,
 ) -> io::Result<()> {
+    // Crossterm 0.29 can spin internally on tty EOF/EIO; keep signals and tty
+    // closure observable on main, with no outstanding read while a child runs.
+    let (poll, requests) = std::sync::mpsc::channel();
+    let (events, input) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        while requests.recv().is_ok() {
+            let result = event::poll(Duration::from_millis(50)).and_then(|ready| {
+                if ready {
+                    event::read().map(Some)
+                } else {
+                    Ok(None)
+                }
+            });
+            let failed = result.is_err();
+            if events.send(result).is_err() || failed {
+                break;
+            }
+        }
+    });
+    let mut pending = false;
+    let mut open = open::Open::default();
     let mut dirty = true;
     let mut worker_dead = false;
     let mut next_age = Instant::now();
     loop {
         if signal.load(Ordering::Relaxed) != 0 {
             return Ok(());
+        }
+        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+            return Err(io::Error::other("terminal closed"));
         }
         while let Ok(warnings) = scans.status.try_recv() {
             app.watch_warnings = warnings;
@@ -297,7 +349,7 @@ fn event_loop(
             let result = match scans.results.try_recv() {
                 Ok(result) => result,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) if !worker_dead => {
-                    app.message = "scan worker died; restart sboard".into();
+                    app.summary = "scan worker died; restart sboard".into();
                     app.scan_warnings.clear();
                     worker_dead = true;
                     dirty = true;
@@ -307,7 +359,7 @@ fn event_loop(
             };
             match result {
                 Ok(result) => {
-                    app.message = format!("{} projects", result.projects.len());
+                    app.summary = format!("{} projects", result.projects.len());
                     app.scan_warnings = result.warnings;
                     app.replace(result.projects);
                 }
@@ -316,7 +368,7 @@ fn event_loop(
                     // Reset the fullscreen buffers without querying the cursor position.
                     terminal.resize(terminal.size()?.into())?;
                     app.scan_warnings.clear();
-                    app.message = format!("scan: {error}");
+                    app.summary = format!("scan: {error}");
                 }
             }
             dirty = true;
@@ -326,6 +378,9 @@ fn event_loop(
             next_age = Instant::now() + Duration::from_secs(1);
         }
         if dirty {
+            if let Some(text) = open.text() {
+                app.message = text;
+            }
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -333,20 +388,43 @@ fn event_loop(
             terminal.draw(|frame| app.render(frame, now))?;
             dirty = false;
         }
-        // Bounded input wait also bounds signal and channel response latency.
-        if event::poll(Duration::from_millis(50))? {
-            match event::read()? {
-                Event::Key(key) if key.kind != KeyEventKind::Release => {
+        // One outstanding read: the reader waits while a child owns the terminal.
+        if !pending {
+            poll.send(())
+                .map_err(|_| io::Error::other("terminal reader stopped"))?;
+            pending = true;
+        }
+        let event = match input.recv_timeout(Duration::from_millis(50)) {
+            Ok(result) => {
+                pending = false;
+                result?
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(_) => return Err(io::Error::other("terminal reader stopped")),
+        };
+        match event {
+            Some(Event::Key(key)) if key.kind != KeyEventKind::Release => {
+                app.message.clear();
+                if !open.key(app, key, terminal)? {
                     match app.key(key) {
                         Action::Quit => return Ok(()),
                         Action::Rescan => app.request_scan(scans),
                         Action::None => {}
+                        action => open.action(app, action, terminal)?,
                     }
-                    dirty = true;
                 }
-                Event::Resize(_, _) => dirty = true,
-                _ => {}
+                if session_board::launch::take_child_interrupt() {
+                    let _ = signal.compare_exchange(
+                        signal_hook::consts::SIGINT as usize,
+                        0,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    );
+                }
+                dirty = true;
             }
+            Some(Event::Resize(_, _)) => dirty = true,
+            _ => {}
         }
     }
 }

@@ -85,7 +85,12 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         frame.render_widget(paragraph, content);
     }
     frame.render_widget(
-        Paragraph::new(format!("Resume:\n{}", session.resume_hint)).wrap(Wrap { trim: false }),
+        Paragraph::new(format!(
+            "Resume:\n{}\nPane: {}",
+            session.resume_hint,
+            session.pane.as_deref().unwrap_or("none")
+        ))
+        .wrap(Wrap { trim: false }),
         regions[3],
     );
 }

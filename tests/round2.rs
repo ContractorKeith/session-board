@@ -74,6 +74,7 @@ fn result(error: bool) -> Value {
 }
 fn command(temp: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sboard"));
+    common::no_tmux(&mut cmd, temp);
     cmd.env("SBOARD_STATE_DIR", temp.join("state"))
         .env("SBOARD_CONFIG_DIR", temp.join("config"))
         .env("CLAUDE_CONFIG_DIR", temp.join("claude"))
@@ -747,9 +748,9 @@ fn round3_fifo_title_index_never_blocks_list_or_doctor() {
             );
         } else {
             let stores: Value = serde_json::from_slice(&output.stdout).unwrap();
-            assert_eq!(stores[1]["skipped_stores"], 1);
+            assert_eq!(stores["stores"][1]["skipped_stores"], 1);
             assert!(
-                stores[1]["warnings"][0]
+                stores["stores"][1]["warnings"][0]
                     .as_str()
                     .unwrap()
                     .contains(path.to_str().unwrap())
@@ -844,8 +845,8 @@ fn round4_doctor_counts_duplicate_ids() {
         .unwrap();
     assert!(output.status.success());
     let stores: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(stores[0]["duplicate_ids"], 1);
-    assert_eq!(stores[1]["duplicate_ids"], 0);
+    assert_eq!(stores["stores"][0]["duplicate_ids"], 1);
+    assert_eq!(stores["stores"][1]["duplicate_ids"], 0);
 }
 
 #[cfg(unix)]

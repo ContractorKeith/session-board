@@ -91,8 +91,7 @@ fn navigation_fold_and_rescan_identity() {
     assert!(app.session().is_some());
     key(&mut app, KeyCode::Up);
     assert!(app.session().is_none());
-    assert_eq!(key(&mut app, KeyCode::Enter), Action::None);
-    assert_eq!(app.message, "open lands in M3");
+    assert_eq!(key(&mut app, KeyCode::Enter), Action::Open);
     assert_eq!(key(&mut app, KeyCode::Char('r')), Action::Rescan);
     key(&mut app, KeyCode::Char('?'));
     assert!(app.help);
