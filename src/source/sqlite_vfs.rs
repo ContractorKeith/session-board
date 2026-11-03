@@ -19,7 +19,8 @@ pub(super) fn open(uri: &str, flags: OpenFlags) -> rusqlite::Result<Connection> 
         // SAFETY: SQLite owns the default VFS for process lifetime; no code here
         // unregisters it. Check for null before copying its initialized structure.
         // The leaked copy and static C name outlive registration and all callbacks;
-        // retain the parent's callback/data pointers except our xOpen guard.
+        // retain the parent's callback/data pointers except our xOpen guard, and
+        // szOsFile/iVersion so SQLite allocates a file buffer matching the parent.
         unsafe {
             let parent = ffi::sqlite3_vfs_find(ptr::null());
             if parent.is_null() {

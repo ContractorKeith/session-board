@@ -53,6 +53,9 @@ read-only inputs; sboard must never write inside `~/.claude`, `~/.codex`, `~/.gr
 
 ## Traps
 
+- If /tmp is full, set TMPDIR to a scratch directory outside every git checkout.
+  The attention CLI tests resolve fixture projects through git; a TMPDIR inside a
+  worktree incorrectly groups them under that enclosing repository.
 - Status from the transcript is intended; pane contents are never read. If the pane shows a
   prompt and the transcript says working, the transcript wins and that is a status-rule bug,
   not a design bug.
