@@ -229,7 +229,7 @@ impl Notifier for Delivery {
         match self
             .sender
             .as_ref()
-            .unwrap()
+            .expect("delivery retains its sender until Drop")
             .try_send((title.into(), body.into()))
         {
             Ok(()) => self.queue_warned = false,

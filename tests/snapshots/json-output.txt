@@ -1,0 +1,144 @@
+[
+  {
+    "archived": false,
+    "name": "alpha",
+    "pinned": true,
+    "root": "/fixture/alpha",
+    "sessions": [
+      {
+        "agent": "claude_code",
+        "archived": false,
+        "cwd": "/fixture/alpha",
+        "id": "a-wait",
+        "last_activity_at": 100,
+        "last_assistant_text": "Assistant placeholder",
+        "last_user_text": "User placeholder",
+        "pane": null,
+        "project_root": "/fixture/alpha",
+        "resume_hint": "claude --resume done",
+        "started_at": 1793534340,
+        "status": "waiting",
+        "title": "Résumé \"quoted\"\nsecond line",
+        "transcript_path": "/fixture/a-wait.jsonl",
+        "unread": true
+      }
+    ],
+    "tags": [
+      "rust/CLI%"
+    ],
+    "unread_count": 14
+  }
+]
+[
+  {
+    "agent": "claude_code",
+    "archived": false,
+    "cwd": "/fixture/alpha",
+    "id": "a-wait",
+    "last_activity_at": 100,
+    "last_assistant_text": "Assistant placeholder",
+    "last_user_text": "User placeholder",
+    "pane": null,
+    "pinned": true,
+    "project_root": "/fixture/alpha",
+    "resume_hint": "claude --resume done",
+    "started_at": 1793534340,
+    "status": "waiting",
+    "tags": [
+      "rust/CLI%"
+    ],
+    "title": "Résumé \"quoted\"\nsecond line",
+    "transcript_path": "/fixture/a-wait.jsonl",
+    "unread": true
+  }
+]
+[
+  {
+    "archived": false,
+    "name": "rust/CLI%",
+    "pinned": false,
+    "root": "tag:rust%2FCLI%25",
+    "sessions": [
+      {
+        "agent": "claude_code",
+        "archived": false,
+        "cwd": "/fixture/alpha",
+        "group": "tag:rust%2FCLI%25",
+        "id": "a-wait",
+        "last_activity_at": 100,
+        "last_assistant_text": "Assistant placeholder",
+        "last_user_text": "User placeholder",
+        "pane": null,
+        "project_root": "/fixture/alpha",
+        "resume_hint": "claude --resume done",
+        "started_at": 1793534340,
+        "status": "waiting",
+        "title": "Résumé \"quoted\"\nsecond line",
+        "transcript_path": "/fixture/a-wait.jsonl",
+        "unread": true
+      }
+    ],
+    "tags": [
+      "rust/CLI%"
+    ],
+    "unread_count": 14
+  }
+]
+[
+  {
+    "agent": "claude_code",
+    "archived": false,
+    "cwd": "/fixture/alpha",
+    "group": "tag:rust%2FCLI%25",
+    "id": "a-wait",
+    "last_activity_at": 100,
+    "last_assistant_text": "Assistant placeholder",
+    "last_user_text": "User placeholder",
+    "pane": null,
+    "pinned": true,
+    "project_root": "/fixture/alpha",
+    "resume_hint": "claude --resume done",
+    "started_at": 1793534340,
+    "status": "waiting",
+    "tags": [
+      "rust/CLI%"
+    ],
+    "title": "Résumé \"quoted\"\nsecond line",
+    "transcript_path": "/fixture/a-wait.jsonl",
+    "unread": true
+  }
+]
+[
+  {
+    "archived": false,
+    "name": "rust/CLI%",
+    "pinned": false,
+    "root": "tag:rust%2FCLI%25",
+    "sessions": [
+      {
+        "agent": "claude_code",
+        "archived": true,
+        "cwd": "/fixture/alpha",
+        "group": "tag:rust%2FCLI%25",
+        "id": "a-wait",
+        "last_activity_at": 100,
+        "last_assistant_text": "Assistant placeholder",
+        "last_user_text": "User placeholder",
+        "pane": null,
+        "project_root": "/fixture/alpha",
+        "resume_hint": "claude --resume done",
+        "started_at": 1793534340,
+        "status": "waiting",
+        "title": "Résumé \"quoted\"\nsecond line",
+        "transcript_path": "/fixture/a-wait.jsonl",
+        "unread": false
+      }
+    ],
+    "tags": [
+      "rust/CLI%"
+    ],
+    "unread_count": 14
+  }
+]
+[]
+[]

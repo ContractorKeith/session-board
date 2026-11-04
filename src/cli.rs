@@ -1,4 +1,5 @@
 use crate::storage;
+mod json;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use std::{
@@ -278,30 +279,7 @@ pub fn attention_json(
     projects: &[crate::model::Project],
     state: &crate::state::State,
 ) -> io::Result<()> {
-    let items = crate::attention::attention(projects, state);
-    let sessions: Vec<_> = items
-        .iter()
-        .map(|item| {
-            let mut row = serde_json::to_value(item.session)?;
-            row["unread"] = state.unread(item.session).into();
-            row["archived"] = state.session_archived(item.session).into();
-            row["pinned"] = state.pins.contains(&item.session.project_root).into();
-            row["tags"] = serde_json::to_value(
-                state
-                    .tags
-                    .get(&item.session.project_root)
-                    .cloned()
-                    .unwrap_or_default(),
-            )?;
-            if item.project.root.starts_with("untagged:")
-                || item.project.root.to_string_lossy().starts_with("tag:")
-            {
-                row["group"] = item.project.root.to_string_lossy().into_owned().into();
-            }
-            Ok(row)
-        })
-        .collect::<Result<_, serde_json::Error>>()?;
-    writeln!(out, "{}", serde_json::to_string_pretty(&sessions)?)
+    json::attention(out, projects, state)
 }
 
 /// Shared renderer for the cold scan and its fixed-clock fixture golden.
@@ -320,27 +298,7 @@ pub fn list_with_state(
     state: &crate::state::State,
 ) -> io::Result<()> {
     if json {
-        let mut value = serde_json::to_value(projects)?;
-        for (project, encoded) in projects.iter().zip(value.as_array_mut().unwrap()) {
-            for (session, row) in project
-                .sessions
-                .iter()
-                .zip(encoded["sessions"].as_array_mut().unwrap())
-            {
-                if project.root.starts_with("untagged:")
-                    || project.root.to_string_lossy().starts_with("tag:")
-                {
-                    row["group"] = project.root.to_string_lossy().into_owned().into();
-                }
-                row["unread"] = state.unread(session).into();
-                row["archived"] = (state.archived.contains(&session.id)
-                    || state
-                        .archived
-                        .contains(&session.project_root.to_string_lossy().into_owned()))
-                .into();
-            }
-        }
-        writeln!(out, "{}", serde_json::to_string_pretty(&value)?)?;
+        json::list(out, projects, state)?;
     } else {
         for project in projects {
             writeln!(

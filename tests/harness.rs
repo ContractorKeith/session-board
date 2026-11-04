@@ -150,7 +150,7 @@ fn scan_runs_all_enabled_sources_resolves_groups_and_applies_state() {
             .iter()
             .all(|s| s.project_root == Path::new("/project"))
     );
-    let mut disabled = config.clone();
+    let mut disabled = config;
     disabled.agents.codex = false;
     let result = scan::scan(&registry, &disabled, &state, Path::to_path_buf);
     assert_eq!(result.skipped_lines, 2);

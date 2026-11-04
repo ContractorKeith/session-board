@@ -16,8 +16,11 @@ const NAME: &str = "sboard_readonly";
 
 pub(super) fn open(uri: &str, flags: OpenFlags) -> rusqlite::Result<Connection> {
     let code = *REGISTERED.get_or_init(|| {
-        // SQLite owns the parent for process lifetime. Register a leaked copy,
-        // retaining every platform callback and pAppData except our xOpen guard.
+        // SAFETY: SQLite owns the default VFS for process lifetime; no code here
+        // unregisters it. Check for null before copying its initialized structure.
+        // The leaked copy and static C name outlive registration and all callbacks;
+        // retain the parent's callback/data pointers except our xOpen guard, and
+        // szOsFile/iVersion so SQLite allocates a file buffer matching the parent.
         unsafe {
             let parent = ffi::sqlite3_vfs_find(ptr::null());
             if parent.is_null() {
@@ -63,8 +66,9 @@ unsafe extern "C" fn open_existing_sidecar(
         });
     }
     let parent = PARENT.load(Ordering::Acquire);
-    // Registration precedes every callback. SQLite supplies valid C arguments;
-    // dispatch through the unchanged parent with CREATE atomically disabled.
+    // SAFETY: registration stores a non-null parent before installing this callback;
+    // acquire/release publishes it. SQLite supplies xOpen arguments valid for this
+    // call, which we forward unchanged to the live parent except for the flags.
     unsafe {
         match (*parent).xOpen {
             Some(open) => open(parent, name, file, flags, out_flags),

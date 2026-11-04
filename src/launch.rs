@@ -135,6 +135,10 @@ pub fn child_hung_up() -> bool {
 
 // Block SIGTTOU only on this thread while transferring terminal ownership.
 fn foreground(fd: i32, group: i32) -> io::Result<()> {
+    // SAFETY: sigset_t accepts zero initialization on supported Unix targets; both
+    // stack sets stay valid through these synchronous calls. sigemptyset initializes
+    // blocked before use, and a successful pthread_sigmask initializes previous.
+    // Invalid fd/group values are reported by tcsetpgrp, not dereferenced.
     unsafe {
         let mut blocked = std::mem::zeroed();
         let mut previous = std::mem::zeroed();
@@ -157,6 +161,7 @@ fn terminal_hung_up() -> bool {
         events: 0,
         revents: 0,
     };
+    // SAFETY: fd is one initialized, writable pollfd for the duration of the call.
     // A zero-time poll observes PTY closure without consuming the child's input.
     (unsafe { libc::poll(&mut fd, 1, 0) > 0 })
         && fd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
@@ -187,8 +192,12 @@ pub fn run(command: &mut Command) -> io::Result<()> {
             return Err(error);
         }
     };
+    // SAFETY: tcgetpgrp takes a descriptor by value and reports invalid/non-TTY fds.
     let parent_group = unsafe { libc::tcgetpgrp(libc::STDIN_FILENO) };
     command.process_group(0);
+    // SAFETY: the child callback uses only async-signal-safe process/terminal/signal
+    // calls and stack values; foreground's error path returns a raw OS error.
+    // No locks, allocation or inherited Rust I/O buffers are used after fork.
     unsafe {
         command.pre_exec(move || {
             if tty {
@@ -205,6 +214,8 @@ pub fn run(command: &mut Command) -> io::Result<()> {
             if hung_up.load(Ordering::SeqCst) || (tty && terminal_hung_up()) {
                 CHILD_HUNG_UP.store(true, Ordering::SeqCst);
                 // Give the whole group time to handle HUP and reap its own children.
+                // SAFETY: kill takes scalar arguments. group names our spawned child's
+                // process group; keeping the leader unreaped prevents PID reuse.
                 unsafe {
                     libc::kill(-group, libc::SIGHUP);
                 }
@@ -214,6 +225,8 @@ pub fn run(command: &mut Command) -> io::Result<()> {
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 // The leader may have exited while a descendant ignored HUP.
+                // SAFETY: scalar arguments; the leader remains unreaped, so group
+                // still identifies the same child group during escalation.
                 unsafe {
                     libc::kill(-group, libc::SIGKILL);
                 }
@@ -227,6 +240,7 @@ pub fn run(command: &mut Command) -> io::Result<()> {
                 return Err(io::Error::other("terminal hung up"));
             }
             if interrupted.load(Ordering::SeqCst) && !forwarded_int {
+                // SAFETY: scalar arguments; the child group leader is still unreaped.
                 unsafe {
                     libc::kill(-group, libc::SIGINT);
                 }
@@ -235,6 +249,8 @@ pub fn run(command: &mut Command) -> io::Result<()> {
             // Observe stops as well as exits: the shell tracks sboard's job group,
             // while terminal input goes to the separate agent group.
             let mut status = 0;
+            // SAFETY: status is writable for one c_int throughout waitpid; group is
+            // our child PID, and the flags request only nonblocking exit/stop events.
             let waited =
                 unsafe { libc::waitpid(group, &mut status, libc::WNOHANG | libc::WUNTRACED) };
             if waited == -1 {
@@ -251,14 +267,19 @@ pub fn run(command: &mut Command) -> io::Result<()> {
                 loop {
                     // SIGSTOP also works for an orphaned PTY group. A background
                     // resume must stop again instead of stealing the shell's terminal.
+                    // SAFETY: SIGSTOP is a valid signal; raise takes no pointers.
                     unsafe { libc::raise(libc::SIGSTOP) };
                     if hung_up.load(Ordering::SeqCst) || (tty && terminal_hung_up()) {
                         break;
                     }
+                    // SAFETY: the descriptor is passed by value; a closed/non-TTY fd
+                    // returns an error instead of accessing invalid memory.
                     if !tty || unsafe { libc::tcgetpgrp(libc::STDIN_FILENO) } == parent_group {
                         if tty {
                             foreground(libc::STDIN_FILENO, group)?;
                         }
+                        // SAFETY: scalar arguments; waitpid observed a stop rather
+                        // than reaping the child, so its process group is still ours.
                         unsafe { libc::kill(-group, libc::SIGCONT) };
                         break;
                     }
