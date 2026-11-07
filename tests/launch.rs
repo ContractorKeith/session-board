@@ -366,6 +366,83 @@ fn missing_cwd_refuses_resume_and_help_lists_commands() {
 }
 
 #[test]
+fn issue59_cwd_that_is_a_file_says_not_a_directory() {
+    let s = Sandbox::new();
+    let id = s.session("claude_code");
+    fs::remove_dir(s.path("project")).unwrap();
+    fs::write(s.path("project"), "").unwrap();
+    failure(
+        s.cmd().args(["open", &id]).output().unwrap(),
+        "not a directory",
+    );
+    assert!(!s.path("cwd").exists());
+}
+
+#[test]
+fn issue59_duplicate_id_opens_most_recent_and_warns() {
+    let s = Sandbox::new();
+    let id = s.session("claude_code");
+    let newest = s.path("claude/projects/project/session.jsonl");
+    // An older copy of the same transcript in a second store directory.
+    fs::create_dir_all(s.path("claude/projects/copy")).unwrap();
+    let older = s.path("claude/projects/copy/session.jsonl");
+    let mut rows: Vec<serde_json::Value> = fs::read_to_string(&newest)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    fs::create_dir(s.path("elsewhere")).unwrap();
+    for row in &mut rows {
+        if row.get("timestamp").is_some() {
+            row["timestamp"] = "2026-01-01T00:00:00Z".into();
+        }
+        if row.get("cwd").is_some() {
+            row["cwd"] = s.path("elsewhere").to_str().unwrap().into();
+        }
+    }
+    fs::write(
+        &older,
+        rows.iter().map(|v| format!("{v}\n")).collect::<String>(),
+    )
+    .unwrap();
+    let out = s.cmd().args(["open", &id]).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    success(out);
+    assert!(err.contains("2 transcripts share"), "{err}");
+    assert_eq!(
+        fs::read_to_string(s.path("cwd")).unwrap().trim(),
+        s.path("project").canonicalize().unwrap().to_str().unwrap()
+    );
+}
+
+#[test]
+fn issue59_agents_do_not_inherit_git_repository_overrides() {
+    let s = Sandbox::new();
+    script(
+        &s.path("bin/claude"),
+        "printf '%s|%s' \"${GIT_DIR-unset}\" \"${GIT_WORK_TREE-unset}\" > \"$RECORD_ARGS\"",
+    );
+    let id = s.session("claude_code");
+    success(
+        s.cmd()
+            .args(["open", &id])
+            .env("GIT_DIR", "/elsewhere/.git")
+            .env("GIT_WORK_TREE", "/elsewhere")
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(fs::read_to_string(s.path("args")).unwrap(), "unset|unset");
+    success(
+        s.cmd()
+            .args(["new", s.path("project").to_str().unwrap()])
+            .env("GIT_DIR", "/elsewhere/.git")
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(fs::read_to_string(s.path("args")).unwrap(), "unset|unset");
+}
+
+#[test]
 fn doctor_reports_absent_tmux_and_failed_agents_report_one_sentence() {
     let s = Sandbox::new();
     let out = s.cmd().arg("doctor").output().unwrap();

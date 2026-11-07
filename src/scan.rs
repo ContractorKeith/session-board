@@ -12,6 +12,8 @@ pub struct Scan {
     pub skipped_stores: usize,
     pub skipped_sessions: usize,
     pub warnings: Vec<String>,
+    /// Archive entries in force when this scan ran; queued scans keep their own mute (#116).
+    pub archived: Vec<String>,
 }
 
 /// Root discovery is supplied by the caller; grouping itself does no I/O.
@@ -21,7 +23,10 @@ pub fn scan(
     state: &State,
     mut resolve: impl FnMut(&Path) -> PathBuf,
 ) -> Scan {
-    let mut result = Scan::default();
+    let mut result = Scan {
+        archived: state.archived.clone(),
+        ..Scan::default()
+    };
     let mut projects = BTreeMap::new();
     for root in config
         .roots

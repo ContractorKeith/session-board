@@ -311,6 +311,11 @@ pub fn run(command: &mut Command) -> io::Result<()> {
 pub fn directory(cwd: &Path) -> io::Result<()> {
     if cwd.is_dir() {
         Ok(())
+    } else if cwd.exists() {
+        Err(io::Error::other(format!(
+            "not a directory: {}",
+            cwd.display()
+        )))
     } else {
         Err(io::Error::other(format!(
             "directory no longer exists: {}",
@@ -346,6 +351,7 @@ pub fn resume_command(session: &Session) -> io::Result<Command> {
         command.args([verb, "--", native]);
     }
     command.current_dir(&session.cwd);
+    without_git_env(&mut command);
     Ok(command)
 }
 pub fn open(session: &Session, socket: &str) -> io::Result<String> {
@@ -380,7 +386,9 @@ pub fn launch(cwd: &Path, agent: Agent, socket: &str) -> io::Result<String> {
     if connection.inside {
         tmux::new_window(&connection, cwd, agent)?;
     } else {
-        run(Command::new(executable(tmux::agent_command(agent))?).current_dir(cwd))?;
+        let mut command = Command::new(executable(tmux::agent_command(agent))?);
+        without_git_env(command.current_dir(cwd));
+        run(&mut command)?;
     }
     Ok(with_notice(
         format!(
@@ -394,6 +402,11 @@ pub fn launch(cwd: &Path, agent: Agent, socket: &str) -> io::Result<String> {
 fn git(cwd: &Path) -> Command {
     let mut cmd = Command::new("git");
     cmd.current_dir(cwd);
+    without_git_env(&mut cmd);
+    cmd
+}
+/// Repository overrides from sboard's own environment would point git and agents elsewhere (#59).
+fn without_git_env(cmd: &mut Command) {
     for key in [
         "GIT_DIR",
         "GIT_WORK_TREE",
@@ -404,7 +417,6 @@ fn git(cwd: &Path) -> Command {
     ] {
         cmd.env_remove(key);
     }
-    cmd
 }
 fn git_path(mut bytes: Vec<u8>) -> PathBuf {
     // rev-parse writes one terminator; a newline may also be part of the name.

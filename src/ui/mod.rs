@@ -40,6 +40,8 @@ pub enum Row {
     Session(PathBuf, PathBuf),
 }
 
+const HELP: &str = "Tab  attention / tree\nAttention focus: h / l collapse / expand; j / k move\nAttention focus: Enter opens selected session\nj / k / ↑ / ↓  move\nPgUp / PgDn / Home / End  page / ends\nTree focus: h / l / ← / → fold / unfold project\nEnter open · n new · w new in worktree\np pin · t tags · m read · a archive · A archived\ns sort · g group by tag / project\nr  rescan\n?  toggle help\nq / Ctrl-C  quit";
+
 pub struct App {
     pub state: session_board::state::State,
     pub open: open::Open,
@@ -52,6 +54,7 @@ pub struct App {
     pub folded: HashSet<PathBuf>,
     pub selected: usize,
     pub help: bool,
+    pub help_scroll: u16,
     pub message: String,
     pub summary: String,
     pub color: bool,
@@ -89,6 +92,7 @@ impl App {
             folded: HashSet::new(),
             selected: 0,
             help: false,
+            help_scroll: 0,
             message: String::new(),
             summary: "scanning…".into(),
             color,
@@ -200,9 +204,20 @@ impl App {
         }
         if key.code == KeyCode::Char('?') {
             self.help = !self.help;
+            self.help_scroll = 0;
             return Action::None;
         }
         if self.help {
+            // Short terminals clip the help text, so it scrolls instead (#18).
+            let last = HELP.lines().count().saturating_sub(1) as u16;
+            self.help_scroll = match key.code {
+                KeyCode::Char('j') | KeyCode::Down => self.help_scroll.saturating_add(1),
+                KeyCode::Char('k') | KeyCode::Up => self.help_scroll.saturating_sub(1),
+                KeyCode::PageDown | KeyCode::End => last,
+                KeyCode::PageUp | KeyCode::Home => 0,
+                _ => self.help_scroll,
+            }
+            .min(last);
             return Action::None;
         }
         if let Some(action) = self.attention_key(key.code) {
@@ -299,7 +314,20 @@ impl App {
         let vertical =
             Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(frame.area());
         if self.help {
-            frame.render_widget(Paragraph::new("Tab  attention / tree\nAttention focus: h / l collapse / expand; j / k move\nAttention focus: Enter opens selected session\nj / k / ↑ / ↓  move\nPgUp / PgDn / Home / End  page / ends\nTree focus: h / l / ← / → fold / unfold project\nEnter open · n new · w new in worktree\np pin · t tags · m read · a archive · A archived\ns sort · g group by tag / project\nr  rescan\n?  toggle help\nq / Ctrl-C  quit").block(Block::default().borders(Borders::ALL).title("Help")), vertical[0]);
+            let area = vertical[0];
+            let lines = HELP.lines().count() as u16;
+            let visible = area.height.saturating_sub(2);
+            let title = if lines > visible {
+                "Help (j / k scroll)"
+            } else {
+                "Help"
+            };
+            frame.render_widget(
+                Paragraph::new(HELP)
+                    .scroll((self.help_scroll.min(lines.saturating_sub(visible)), 0))
+                    .block(Block::default().borders(Borders::ALL).title(title)),
+                area,
+            );
         } else {
             let content = Layout::vertical([
                 Constraint::Length(attention::height(
@@ -470,10 +498,12 @@ fn event_loop(
                     app.scan_warnings = result.warnings;
                     app.organize.missing_projects = result.missing_projects.into_iter().collect();
                     app.replace(result.projects);
+                    let archived_at_scan = result.archived;
                     if let Ok((config, _)) = session_board::config::Config::path()
                         .and_then(|path| session_board::config::Config::load(&path))
                     {
-                        transitions.scan_with_state(
+                        transitions.scan_queued(
+                            &archived_at_scan,
                             &app.organize.projects,
                             &app.state,
                             config.notify,

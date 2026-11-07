@@ -138,7 +138,7 @@ impl App {
                 self.organize.snapshot = state;
                 self.scan_warnings.extend(warnings);
             }
-            Err(error) => self.message = format!("state: {error}"),
+            Err(error) => self.message = state_error(&error),
         }
         self.organize.path = Some(path);
     }
@@ -158,7 +158,7 @@ impl App {
                     }
                 }
                 Err(error) => {
-                    self.message = format!("state: {error}");
+                    self.message = state_error(&error);
                     self.organize.read_deadline =
                         Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
                 }
@@ -354,5 +354,14 @@ impl App {
         }
         self.save_organization();
         Some(Action::Rescan)
+    }
+}
+
+/// Reason first: a long state path would otherwise push it off a narrow footer (#116).
+fn state_error(error: &std::io::Error) -> String {
+    let text = error.to_string();
+    match text.split_once(": ") {
+        Some((path, reason)) if path.starts_with('/') => format!("state: {reason} ({path})"),
+        _ => format!("state: {text}"),
     }
 }
