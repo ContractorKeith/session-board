@@ -778,7 +778,30 @@ fn issue71_failed_save_survives_rescan_with_error_message() {
         "{}",
         app.status_text()
     );
+    // #116: the reason precedes the long path, so a 100-column footer keeps it.
+    assert!(
+        app.status_text().starts_with("state: Permission denied"),
+        "{}",
+        app.status_text()
+    );
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+#[test]
+fn issue18_help_scrolls_on_short_terminals() {
+    let mut app = fixture_app();
+    key(&mut app, KeyCode::Char('?'));
+    let top = frame(&app, 80, 9);
+    assert!(top.contains("Help (j / k scroll)"), "{top}");
+    assert!(!top.contains("Ctrl-C  quit"), "{top}");
+    key(&mut app, KeyCode::End);
+    let bottom = frame(&app, 80, 9);
+    assert!(bottom.contains("Ctrl-C  quit"), "{bottom}");
+    for _ in 0..20 {
+        key(&mut app, KeyCode::Char('k'));
+    }
+    assert_eq!(frame(&app, 80, 9), top);
+    assert!(!frame(&app, 100, 30).contains("scroll"));
 }
 
 #[test]

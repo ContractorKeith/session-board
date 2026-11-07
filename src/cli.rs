@@ -379,13 +379,25 @@ pub fn open(id: &str) -> io::Result<()> {
             ..Default::default()
         },
     )?;
-    let session = result
+    let matches: Vec<_> = result
         .scan
         .projects
         .iter()
         .flat_map(|p| &p.sessions)
-        .find(|s| s.id == id)
+        .filter(|s| s.id == id)
+        .collect();
+    // A copied transcript repeats its id; open the most recent and say so (#59).
+    let session = matches
+        .iter()
+        .max_by_key(|s| s.last_activity_at)
         .ok_or_else(|| io::Error::other(format!("session not found: {id}")))?;
+    if matches.len() > 1 {
+        eprintln!(
+            "sboard: {} transcripts share {id}; opening the most recent: {}",
+            matches.len(),
+            session.transcript_path.display()
+        );
+    }
     let (config, _) = crate::config::Config::load(&crate::config::Config::path()?)?;
     let outcome = crate::launch::open(session, &config.tmux.socket)?;
     writeln!(io::stdout().lock(), "{}", crate::source::title(&outcome))?;

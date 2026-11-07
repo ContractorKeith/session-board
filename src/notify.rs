@@ -284,14 +284,36 @@ impl Transitions {
             now,
         );
     }
-    pub fn scan_with_state(
+    /// Mute sessions archived either now or when the queued scan ran (#116).
+    pub fn scan_queued(
         &mut self,
+        archived_at_scan: &[String],
         projects: &[Project],
         state: &crate::state::State,
         enabled: bool,
         notifier: &mut impl Notifier,
     ) {
-        self.scan_at_with_state(projects, state, enabled, notifier, unix_time());
+        self.scan_queued_at(
+            archived_at_scan,
+            projects,
+            state,
+            enabled,
+            notifier,
+            unix_time(),
+        );
+    }
+    fn scan_queued_at(
+        &mut self,
+        archived_at_scan: &[String],
+        projects: &[Project],
+        state: &crate::state::State,
+        enabled: bool,
+        notifier: &mut impl Notifier,
+        now: i64,
+    ) {
+        let mut muted = state.clone();
+        muted.archived.extend(archived_at_scan.iter().cloned());
+        self.scan_at_with_state(projects, &muted, enabled, notifier, now);
     }
     fn scan_at_with_state(
         &mut self,
@@ -465,5 +487,40 @@ mod tests {
                 "read marks suppressed transition notifications"
             );
         }
+    }
+    #[test]
+    fn issue116_queued_scan_keeps_the_archive_it_saw() {
+        let mut projects: Vec<Project> =
+            serde_json::from_str(include_str!("../tests/fixtures/attention-projects.json"))
+                .unwrap();
+        projects.truncate(1);
+        projects[0].sessions.truncate(1);
+        let id = projects[0].sessions[0].id.clone();
+        // Another instance unarchived before this one drained the scans queued during a child.
+        let unarchived = crate::state::State::default();
+        let mut tracker = Transitions::default();
+        let mut recording = Recording::default();
+        projects[0].sessions[0].status = Status::Working;
+        projects[0].sessions[0].last_activity_at = 1000;
+        tracker.scan_queued_at(&[], &projects, &unarchived, true, &mut recording, 1000);
+        projects[0].sessions[0].status = Status::Done;
+        projects[0].sessions[0].last_activity_at = 1001;
+        tracker.scan_queued_at(
+            std::slice::from_ref(&id),
+            &projects,
+            &unarchived,
+            true,
+            &mut recording,
+            1001,
+        );
+        tracker.scan_queued_at(&[], &projects, &unarchived, true, &mut recording, 1002);
+        assert!(
+            recording.calls.is_empty(),
+            "transition seen while archived was announced"
+        );
+        projects[0].sessions[0].status = Status::Waiting;
+        projects[0].sessions[0].last_activity_at = 1003;
+        tracker.scan_queued_at(&[], &projects, &unarchived, true, &mut recording, 1003);
+        assert_eq!(recording.calls.len(), 1);
     }
 }
