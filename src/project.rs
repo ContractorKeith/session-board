@@ -9,8 +9,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Inherited git environment (hooks, `rebase --exec`, editor terminals) would make
-/// `rev-parse` answer for the wrong repository (#14).
 const GIT_ENV: [&str; 6] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -34,7 +32,6 @@ impl ProjectRoots {
     pub fn take_warnings(&mut self) -> Vec<String> {
         std::mem::take(&mut self.warnings)
     }
-    /// Cache failures too: old sessions may point at directories that no longer exist.
     pub fn resolve(&mut self, cwd: &Path) -> PathBuf {
         let warnings = &mut self.warnings;
         let cancelled = &self.cancelled;
@@ -68,7 +65,6 @@ fn git_root(cwd: &Path, warnings: &mut Vec<String>, cancelled: &AtomicBool) -> O
     for key in GIT_ENV {
         command.env_remove(key);
     }
-    // A file avoids pipe-buffer deadlocks even with a very long root path.
     let output_file = tempfile::tempfile().ok()?;
     let mut child = command
         .args(["rev-parse", "--show-toplevel"])
@@ -107,7 +103,6 @@ fn git_root(cwd: &Path, warnings: &mut Vec<String>, cancelled: &AtomicBool) -> O
     if !status.success() {
         return None;
     }
-    // Remove git's line ending, preserving whitespace in the actual path.
     if bytes.last() == Some(&b'\n') {
         bytes.pop();
     }
@@ -125,8 +120,6 @@ fn git_root(cwd: &Path, warnings: &mut Vec<String>, cancelled: &AtomicBool) -> O
     }
 }
 
-/// One identity for existing symlinks and missing paths. Relative session cwds are
-/// rejected by sources; config paths may expand a leading home component.
 pub fn normalize(path: &Path, home: Option<&Path>) -> Option<PathBuf> {
     let expanded;
     let path = if let Ok(suffix) = path.strip_prefix("~") {

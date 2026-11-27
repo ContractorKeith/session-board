@@ -82,7 +82,6 @@ fn delivery_is_nonblocking_and_bounded_under_backpressure() {
         let warnings = worker.take_warnings();
         let _ = sent.send((worker, warnings));
     });
-    // Enqueue finishes while the notifier is still blocked, independent of CPU scheduling.
     let result = result.recv_timeout(Duration::from_secs(5));
     gate.allow(1001);
     let (mut worker, warnings) = result.expect("enqueue blocked behind delivery");
@@ -132,7 +131,6 @@ fn desktop_failure_probe() {
                     .output()
                     .unwrap();
                 let state = String::from_utf8_lossy(&state.stdout);
-                // A killed orphan may briefly await init's reap; it is no longer running.
                 if state.trim().is_empty() || state.trim().starts_with('Z') {
                     break true;
                 }

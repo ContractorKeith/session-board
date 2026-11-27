@@ -20,16 +20,14 @@ from pty_probe import deadline, drain, read_ready
 
 
 def screen(data):
-    # Reconstruct cursor-addressed diff output without an external terminal emulator.
     grid = [[' '] * 100 for _ in range(30)]
     row = col = 0
-    # Rebuilt from the full transcript each call; wait for a partial CSI's next read.
     text = re.sub(r'\x1b\[[?0-9;]*$', '', data.decode('utf-8', errors='ignore'))
     chunks = re.split(r'(\x1b\[[?0-9;]*[A-Za-z])', text)
     for chunk in chunks:
         if chunk.startswith('\x1b['):
             match = re.fullmatch(r'\x1b\[([?0-9;]*)([A-Za-z])', chunk)
-            if match is None: continue  # The next PTY read may complete this escape.
+            if match is None: continue
             params, op = match.groups()
             values = [int(x or 1) for x in params.split(';')] if '?' not in params else []
             if op in ('H', 'f'):
@@ -167,7 +165,6 @@ def case(mode):
         direct = mode.startswith('hangup-') or mode.startswith('escape-') or mode in ('paste-timeout', 'paste-handoff', 'paste-nested', 'decoder-keys')
         stderr_file = (root / 'stderr').open('wb') if mode == 'hangup-stderr-file' else None
         if direct:
-            # Timed bytes must reach the board's PTY without script(1)'s relay.
             def controlling_terminal():
                 os.setsid()
                 fcntl.ioctl(slave, __import__('termios').TIOCSCTTY, 0)
@@ -183,7 +180,6 @@ def case(mode):
             for part in parts:
                 if previous is not None:
                     deadline = previous + gap
-                    # sleep on macOS may coalesce these sub-50 ms timing probes.
                     while time.monotonic() < deadline: pass
                 sent = time.monotonic()
                 if previous is not None: write_gaps.append(round((sent - previous) * 1000, 2))
@@ -202,7 +198,6 @@ def case(mode):
                     return
                 if proc.poll() is not None:
                     break
-            # The process can exit between the predicate and poll above.
             if predicate(): return
             raise AssertionError(f'{mode}: {description}; return={proc.poll()}; write_gaps_ms={write_gaps}; output={output[-1200:]!r}')
         try:
@@ -457,7 +452,6 @@ def case(mode):
                 assert list(saved['tags'].values()) == [['barpq', 'foo']], saved
                 assert saved['pins'] == [] and saved['archived'] == [], saved
                 assert proc.poll() is None, 'paste quit the application'
-                # A deliberate quit follows the paste-burst quarantine.
                 until = time.monotonic() + .06
                 while time.monotonic() < until: pump()
                 os.write(master, b'q')
@@ -576,7 +570,6 @@ def case(mode):
 def child_hangup_case(mode):
     """Bound handoff hangup and clean up even against the unfixed binary."""
     import ctypes
-    # Reap forced-exit grandchildren ourselves on Linux, rather than relying on PID 1.
     if sys.platform == 'linux':
         assert ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
     with tempfile.TemporaryDirectory() as tmp:
@@ -650,7 +643,6 @@ def child_hangup_case(mode):
                 return True
             wait_for(gone, 'orphan descendants survived', 3)
             assert b'panicked' not in (root / 'stderr').read_bytes()
-            # No return to raw mode or alternate screen after terminal handoff hangup.
             assert output.count(b'\x1b[?1049h') <= 1
             print(f'{mode}: exit 129, descendants reaped, no terminal reentry ({time.monotonic() - started:.2f}s)')
         finally:

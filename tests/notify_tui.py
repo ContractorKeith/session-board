@@ -43,7 +43,6 @@ for mode in ([sys.argv[2]] if len(sys.argv) > 2 else ('slow', 'disabled', 'fail'
             git = root / 'bin/git'
             git.write_text('#!/bin/sh\nprintf ready > "$GIT_ENTERED"\nread release < "$NOTIFY_GATE"\nexit 1\n')
             git.chmod(0o755)
-        # A real executable boundary, never a real desktop server.
         for name in ('notify-send', 'osascript'):
             fake = root / 'bin' / name
             fake.write_text('#!/bin/sh\nprintf "call\\n" >> "$NOTIFY_LOG"\n' + ('read ignored < "$NOTIFY_GATE"\n' if mode == 'slow' else 'exec /bin/sleep 30\n' if mode == 'timeout' else 'exit 1\n' if mode == 'fail' else 'exit 0\n'))
@@ -114,10 +113,8 @@ for mode in ([sys.argv[2]] if len(sys.argv) > 2 else ('slow', 'disabled', 'fail'
                     offset = len(output)
                     sent = time.monotonic()
                     os.write(master, b'?')
-                    # Time the visible Help title, excluding Python's full screen reconstruction.
                     wait(lambda: b'Help' in output[offset:], 'help blocked behind desktop command', timeout=2)
                     elapsed = time.monotonic() - sent
-                    # The notifier is held until Help appears; no scheduler-sensitive stopwatch.
                     os.write(gate_fd, b'release\n')
                     wait(lambda: 'Attention focus: Enter' in screen(output), 'help frame incomplete')
                     print(f'help visible in {elapsed * 1000:.1f} ms')
@@ -137,7 +134,6 @@ for mode in ([sys.argv[2]] if len(sys.argv) > 2 else ('slow', 'disabled', 'fail'
             print(f'{mode}: real scan/event path passed')
         finally:
             if proc.poll() is None:
-                # Allow the board to cancel/reap its notifier group on assertion failures too.
                 try:
                     os.write(master, b'q')
                     wait_exit(proc, pump, f'{mode}: cleanup', 8)

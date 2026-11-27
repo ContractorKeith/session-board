@@ -1,4 +1,3 @@
-//! Desktop commands and scan-to-scan status transitions.
 use crate::model::{Project, Status};
 use std::{
     collections::HashMap,
@@ -81,7 +80,6 @@ fn notify_send(title: &str, body: &str, cancelled: &AtomicBool) -> io::Result<()
     )
 }
 fn osascript(title: &str, body: &str, cancelled: &AtomicBool) -> io::Result<()> {
-    // Script is constant; transcript text is passed only as argv.
     let title = text(title);
     let body = text(body);
     run(Command::new("osascript").args(["-e", "on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run", "--", &title, &body]), "osascript", cancelled)
@@ -161,7 +159,6 @@ impl Notifier for Desktop {
     }
 }
 
-/// A bounded queue keeps desktop processes off the event-loop thread.
 pub struct Delivery {
     sender: Option<SyncSender<(String, String)>>,
     warnings: Receiver<String>,
@@ -284,7 +281,6 @@ impl Transitions {
             now,
         );
     }
-    /// Mute sessions archived either now or when the queued scan ran (#116).
     pub fn scan_queued(
         &mut self,
         archived_at_scan: &[String],
@@ -323,7 +319,6 @@ impl Transitions {
         notifier: &mut impl Notifier,
         now: i64,
     ) {
-        // Raw pairs still deduplicate across clock steps; floors belong to one clock interval.
         if self.clock.is_some_and(|previous| now < previous) {
             for history in self.announced.values_mut() {
                 for entry in history {
@@ -399,7 +394,6 @@ impl Transitions {
                 let _ = notifier.notify(&title, &body);
             }
         }
-        // Missing stores and rolled-back transcripts must not erase known activity.
         self.previous.extend(current);
         self.clock = Some(now);
     }
@@ -496,7 +490,6 @@ mod tests {
         projects.truncate(1);
         projects[0].sessions.truncate(1);
         let id = projects[0].sessions[0].id.clone();
-        // Another instance unarchived before this one drained the scans queued during a child.
         let unarchived = crate::state::State::default();
         let mut tracker = Transitions::default();
         let mut recording = Recording::default();

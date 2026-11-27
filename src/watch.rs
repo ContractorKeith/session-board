@@ -1,4 +1,3 @@
-//! Store watching and background scans; no terminal work runs on these threads.
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use session_board::{
     cli,
@@ -92,7 +91,6 @@ impl StoreWatcher {
                                 }
                             }
                         }
-                        // A fixed window cannot be starved by a streaming transcript.
                         due.get_or_insert_with(|| Instant::now() + DEBOUNCE);
                         #[cfg(test)]
                         let _ = observed.send(());
@@ -125,7 +123,6 @@ impl StoreWatcher {
     }
 }
 
-// A failed attachment must not discard the watches that succeeded.
 fn reconcile(
     roots: &mut [Root],
     watcher: &mut impl Watcher,
@@ -143,7 +140,6 @@ fn reconcile(
             let _ = watcher.unwatch(&target);
         }
         if root.watched.is_none() && root.path.is_dir() {
-            // notify reports canonical paths (notably /private/var on macOS).
             let target = std::fs::canonicalize(&root.path).unwrap_or_else(|_| root.path.clone());
             match watcher.watch(&target, RecursiveMode::Recursive) {
                 Ok(()) => {
@@ -202,7 +198,6 @@ impl Scans {
             cancelled,
             move |first| {
                 if panic_once && first {
-                    // Exercise a panic after the first frame, while input remains live.
                     thread::sleep(Duration::from_millis(100));
                     panic!("scan probe");
                 }
@@ -221,7 +216,6 @@ impl Scans {
             Ok(watcher) => (Some(watcher), None),
             Err(error) => (None, Some(format!("watcher: {error}; use r to rescan"))),
         };
-        // Status is a separate channel so a watch recovery updates the bar without a scan.
         let (statuses, status_receiver) = mpsc::channel();
         if let Some(warning) = status {
             let _ = statuses.send(vec![warning]);
@@ -231,7 +225,6 @@ impl Scans {
         let worker = thread::spawn(move || {
             let mut first = true;
             while !stop.load(Ordering::Relaxed) {
-                // File/manual requests reset the quiet-store refresh deadline.
                 if let Err(mpsc::RecvTimeoutError::Disconnected) = requested.recv_timeout(interval)
                 {
                     break;
@@ -256,7 +249,6 @@ impl Scans {
         });
         let _ = requests.try_send(());
         drop(statuses);
-        // Transfer the watch status receiver without a forwarding thread.
         let mut watcher = watcher;
         let status = watcher
             .as_mut()

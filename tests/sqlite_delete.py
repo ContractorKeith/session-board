@@ -69,7 +69,6 @@ def check(agent):
             deadline, polls = time.monotonic() + 30, 0
             while any(child.poll() is None for child in children):
                 assert time.monotonic() < deadline, 'reader timeout'
-                # DELETE's transient journal belongs to the writer; WAL/SHM never appear.
                 names = {p.name for p in directory.iterdir()}
                 assert names <= {db.name, db.name + '-journal'}, names
                 polls += 1

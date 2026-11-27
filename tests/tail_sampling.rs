@@ -157,7 +157,6 @@ fn meaningful_record_one_byte_beyond_one_mib_cap_is_not_recovered() {
     let complete = format!("{}\n", rows[2]);
     let mut attachment = serde_json::json!({"type":"attachment", "text":""});
     let overhead = format!("{attachment}\n").len();
-    // Pin the contract independently of the reader's MAX_TAIL_BYTES constant.
     let distance = 1024 * 1024 + 1;
     attachment["text"] = serde_json::json!("x".repeat(distance - complete.len() - overhead));
     let prefix = format!("{}\n{}\n", rows[0], rows[1]);

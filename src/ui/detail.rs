@@ -41,7 +41,6 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         frame.render_widget(Paragraph::new("Select a session"), inner);
         return;
     };
-    // Separate regions stop long prose from hiding the other text or resume hint.
     let regions = Layout::vertical([
         Constraint::Length(4),
         Constraint::Min(0),

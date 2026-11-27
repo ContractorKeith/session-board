@@ -40,11 +40,11 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Jump to a live pane or resume a recorded session.
+    #[command(about = "Jump to a live pane or resume a recorded session")]
     Open {
         session_id: String,
     },
-    /// Launch a new session in a project or fresh worktree.
+    #[command(about = "Launch a new session in a project or fresh worktree")]
     New {
         project_path: PathBuf,
         #[arg(long, value_enum, default_value = "claude_code")]
@@ -144,7 +144,6 @@ pub fn stores(home: &Path) -> Vec<Store> {
     .collect()
 }
 
-/// The home directory doctor inspects; empty `HOME` counts as unset.
 pub fn home() -> io::Result<PathBuf> {
     storage::home()
 }
@@ -216,7 +215,6 @@ pub fn doctor(out: &mut impl Write, home: &Path, json: bool) -> io::Result<()> {
     Ok(())
 }
 
-/// Filter and sort the project tree without reading stores or state.
 pub fn filter(
     projects: &mut Vec<crate::model::Project>,
     state: &crate::state::State,
@@ -273,7 +271,6 @@ pub fn filter(
     );
 }
 
-/// The filtered attention projection is flat and globally ordered in JSON.
 pub fn attention_json(
     out: &mut impl Write,
     projects: &[crate::model::Project],
@@ -282,7 +279,6 @@ pub fn attention_json(
     json::attention(out, projects, state)
 }
 
-/// Shared renderer for the cold scan and its fixed-clock fixture golden.
 pub fn list(
     out: &mut impl Write,
     projects: &[crate::model::Project],
@@ -352,7 +348,6 @@ pub fn list_with_state(
     Ok(())
 }
 
-/// Diagnostics must not prevent successful stdout when stderr is closed or full.
 pub fn warn(message: &str) {
     let _ = writeln!(io::stderr().lock(), "sboard: {message}");
 }
@@ -386,7 +381,6 @@ pub fn open(id: &str) -> io::Result<()> {
         .flat_map(|p| &p.sessions)
         .filter(|s| s.id == id)
         .collect();
-    // A copied transcript repeats its id; open the most recent and say so (#59).
     let session = matches
         .iter()
         .max_by_key(|s| s.last_activity_at)

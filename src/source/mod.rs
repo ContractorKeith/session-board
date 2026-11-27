@@ -11,7 +11,6 @@ use crate::{
 };
 pub use read::title;
 
-/// Sources report malformed lines and missing stores without failing a scan.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SourceScan {
     pub sessions: Vec<Session>,
@@ -30,7 +29,6 @@ pub trait Source {
 
 pub type Registry = Vec<Box<dyn Source>>;
 
-/// Environment overrides point at the agent config homes, not their stores.
 pub fn registry() -> Registry {
     let home = crate::storage::home().unwrap_or_default();
     registry_at(&home)
@@ -49,7 +47,6 @@ pub fn homes(home: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf)
     )
 }
 
-/// Resolve the SQLite stores once for discovery, doctor and watcher roots.
 pub fn database_paths(home: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
     let env = |key| {
         std::env::var_os(key)

@@ -51,7 +51,6 @@ def case(mode):
         config = root / 'tmux.conf'
         config.write_text('set -g default-shell /bin/sh\nset -g exit-empty off\n')
         socket = 'sboard-test-' + uuid.uuid4().hex
-        # Unicode pane-path framing must not depend on the runner's locale.
         tmux = [TMUX, '-u', '-f', str(config), '-L', socket]
         def run_tmux(*args):
             return subprocess.run(tmux + list(args), cwd=root, env=env,
@@ -67,7 +66,6 @@ def case(mode):
             tmux_env = run_tmux('display', '-p', '#{socket_path},#{pid},0').stdout.decode().strip()
             if mode == 'security':
                 env['TMUX'] = tmux_env
-                # The server's old store settings and executable search path must not win.
                 for directory in ('current-claude/projects', 'current-codex/sessions', 'rogue'):
                     (root / directory).mkdir(parents=True)
                 env['CLAUDE_CONFIG_DIR'] = str(root / 'current-claude')
@@ -103,8 +101,6 @@ def case(mode):
             elif mode == 'no-client':
                 pane = run_tmux('new-window', '-P', '-F', '#{pane_id}', '-c', str(root), 'sleep', '60').stdout.decode().strip()
                 wait_for(lambda: run_tmux('display', '-p', '-t', pane, '#{pane_current_path}').stdout.decode().strip() == str(root), 'live pane missing')
-                # Fix only the agent label, as in the hash/race fixtures below. Renaming
-                # a copied system executable does not give a portable process name.
                 capture = run_tmux('display', '-p', '-t', pane,
                     '#{n:session_name}:#{session_name}#{n:window_index}:#{window_index}#{n:pane_index}:#{pane_index}6:claude#{n:pane_pid}:#{pane_pid}#{n:pane_current_path}:#{pane_current_path}').stdout
                 (root / 'panes').write_bytes(capture)
@@ -135,7 +131,6 @@ def case(mode):
                 victim.mkdir()
                 target = 'a#b' if mode == 'hash-jump' else 'race'
                 run_tmux('new-session', '-d', '-s', target.replace('#', '##'), '-c', str(victim), 'sleep', '60')
-                # tmux can reply before the new pane child has entered its requested cwd.
                 wait_for(lambda: run_tmux('list-panes', '-t', '=' + target, '-F',
                     '#{pane_current_path}').stdout.decode().strip() == str(victim),
                     'target pane did not enter the fixture cwd')
@@ -177,7 +172,6 @@ exec "$REAL_TMUX" -S "$socket" "$@"
                     return bool(run_tmux('list-clients', '-F', '#{client_session}').stdout.strip())
                 wait_for(connected, 'private client did not attach')
                 wrapper = root / 'open'
-                # Supply the shim inputs in the command, independent of tmux's session environment.
                 invocation = ['env', 'PATH=' + env['PATH']] + [key + '=' + value for key, value in shim_env.items()]
                 wrapper.write_text('#!/bin/sh\n' + shlex.join(invocation + [BINARY, 'open', 'claude_code:done']) +
                     '\nresult=$?\nprintf "%s\\n" "$result" > ' + shlex.quote(str(root / 'exit.tmp')) + '\nmv ' + shlex.quote(str(root / 'exit.tmp')) + ' ' + shlex.quote(str(root / 'exit')) + '\nsleep 60\n')
@@ -224,7 +218,6 @@ exec "$REAL_TMUX" -S "$socket" "$@"
                 pane = run_tmux('new-window', '-P', '-F', '#{pane_id}', '-c', str(root), str(wrapper)).stdout.decode().strip()
                 wait_for(lambda: (root / 'pid').exists(), 'board did not launch')
                 pid = int((root / 'pid').read_text())
-                # A rendered frame acknowledges that sboard entered its terminal event loop.
                 wait_for(lambda: b'Projects' in run_tmux('capture-pane', '-p', '-t', pane).stdout,
                          'board never rendered its first frame')
                 run_tmux('kill-server')

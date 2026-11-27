@@ -1,4 +1,3 @@
-//! Pane metadata only: never read pane contents or send keys.
 use crate::{
     launch,
     model::{Agent, Project, Session, Status},
@@ -94,8 +93,6 @@ pub fn inside() -> bool {
 fn escape_format(value: &str) -> String {
     value.replace('#', "##")
 }
-// n: is a byte count. Consume exactly six fields and one record newline;
-// never resynchronize malformed data at a newline inside an untrusted field.
 fn field<'a>(input: &mut &'a [u8]) -> Option<&'a str> {
     let colon = input.iter().position(|b| *b == b':')?;
     let digits = input.get(..colon)?;
@@ -345,7 +342,6 @@ pub fn jump(socket: &str, target: &str) -> io::Result<()> {
     let (window, _) = rest
         .split_once('.')
         .ok_or_else(|| io::Error::other("invalid pane target"))?;
-    // Empty display formats succeed even for missing targets; require an actual pane id.
     let live = launch::output(connection.command().args([
         "display",
         "-p",
@@ -417,7 +413,6 @@ pub fn new_window(connection: &Connection, cwd: &Path, agent: Agent) -> io::Resu
             command.arg("-e").arg(entry);
         }
     }
-    // Multiple argv elements make tmux exec directly, bypassing shell rc files.
     launch::checked(command.arg(executable).arg("--"))
 }
 pub fn doctor(socket: &str) -> String {
@@ -484,7 +479,6 @@ mod tests {
             }
             assert_eq!(PROCESS_READS.with(|c| c.get()), 1);
         }
-        // Exact snapshot counts catch the regression without timing the host's /proc load.
     }
 
     #[test]

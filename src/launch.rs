@@ -1,4 +1,3 @@
-//! Shared command building and worktree creation for CLI and TUI.
 use crate::{
     model::{Agent, Session},
     tmux,
@@ -10,7 +9,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Bound metadata commands without risking a full stdout/stderr pipe.
 pub fn output(command: &mut Command) -> io::Result<Output> {
     let mut stdout = tempfile::tempfile()?;
     let mut stderr = tempfile::tempfile()?;
@@ -133,7 +131,6 @@ pub fn child_hung_up() -> bool {
     CHILD_HUNG_UP.load(std::sync::atomic::Ordering::SeqCst)
 }
 
-// Block SIGTTOU only on this thread while transferring terminal ownership.
 fn foreground(fd: i32, group: i32) -> io::Result<()> {
     // SAFETY: sigset_t accepts zero initialization on supported Unix targets; both
     // stack sets stay valid through these synchronous calls. sigemptyset initializes
@@ -183,7 +180,6 @@ pub fn run(command: &mut Command) -> io::Result<()> {
     restore_terminal();
     let interrupted = Arc::new(AtomicBool::new(false));
     let hung_up = Arc::new(AtomicBool::new(false));
-    // Caught signals reset to their default disposition across the child's exec.
     let int = signal_hook::flag::register(signal_hook::consts::SIGINT, interrupted.clone())?;
     let hup = match signal_hook::flag::register(signal_hook::consts::SIGHUP, hung_up.clone()) {
         Ok(id) => id,
@@ -213,18 +209,15 @@ pub fn run(command: &mut Command) -> io::Result<()> {
         loop {
             if hung_up.load(Ordering::SeqCst) || (tty && terminal_hung_up()) {
                 CHILD_HUNG_UP.store(true, Ordering::SeqCst);
-                // Give the whole group time to handle HUP and reap its own children.
                 // SAFETY: kill takes scalar arguments. group names our spawned child's
                 // process group; keeping the leader unreaped prevents PID reuse.
                 unsafe {
                     libc::kill(-group, libc::SIGHUP);
                 }
                 let deadline = Instant::now() + Duration::from_millis(500);
-                // Keep the leader unreaped until escalation so its group id cannot be reused.
                 while Instant::now() < deadline {
                     std::thread::sleep(Duration::from_millis(10));
                 }
-                // The leader may have exited while a descendant ignored HUP.
                 // SAFETY: scalar arguments; the leader remains unreaped, so group
                 // still identifies the same child group during escalation.
                 unsafe {
@@ -246,8 +239,6 @@ pub fn run(command: &mut Command) -> io::Result<()> {
                 }
                 forwarded_int = true;
             }
-            // Observe stops as well as exits: the shell tracks sboard's job group,
-            // while terminal input goes to the separate agent group.
             let mut status = 0;
             // SAFETY: status is writable for one c_int throughout waitpid; group is
             // our child PID, and the flags request only nonblocking exit/stop events.
@@ -265,8 +256,6 @@ pub fn run(command: &mut Command) -> io::Result<()> {
                     foreground(libc::STDIN_FILENO, parent_group)?;
                 }
                 loop {
-                    // SIGSTOP also works for an orphaned PTY group. A background
-                    // resume must stop again instead of stealing the shell's terminal.
                     // SAFETY: SIGSTOP is a valid signal; raise takes no pointers.
                     unsafe { libc::raise(libc::SIGSTOP) };
                     if hung_up.load(Ordering::SeqCst) || (tty && terminal_hung_up()) {
@@ -405,7 +394,6 @@ fn git(cwd: &Path) -> Command {
     without_git_env(&mut cmd);
     cmd
 }
-/// Repository overrides from sboard's own environment would point git and agents elsewhere (#59).
 fn without_git_env(cmd: &mut Command) {
     for key in [
         "GIT_DIR",
@@ -419,7 +407,6 @@ fn without_git_env(cmd: &mut Command) {
     }
 }
 fn git_path(mut bytes: Vec<u8>) -> PathBuf {
-    // rev-parse writes one terminator; a newline may also be part of the name.
     if bytes.last() == Some(&b'\n') {
         bytes.pop();
     }
@@ -543,7 +530,6 @@ pub fn worktree(project: &Path, branch: &str) -> io::Result<PathBuf> {
             _ => return Err(io::Error::other("branch exists on multiple remotes")),
         }
     }
-    // Successful branch creation, rather than the earlier lookup, establishes ownership.
     let created_branch = if exists {
         false
     } else {
@@ -578,11 +564,9 @@ pub fn worktree(project: &Path, branch: &str) -> io::Result<PathBuf> {
     };
     let mut cmd = git(&root);
     cmd.args(["worktree", "add"]).arg(&path).arg(branch);
-    // Checkouts may take longer than metadata discovery.
     let result = cmd.stdin(Stdio::null()).output()?;
     if !result.status.success() {
         let message = git_error(&result);
-        // The path was absent before this attempt; preserve pre-existing branches.
         let _ = output(
             git(&root)
                 .args(["worktree", "remove", "--force"])

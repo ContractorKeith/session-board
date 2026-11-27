@@ -22,7 +22,6 @@ impl Source for Opencode {
     fn scan(&self, config: &Config) -> SourceScan {
         let mut result = SourceScan::default();
         sqlite::scan(&self.path, &mut result, |connection, result| {
-            // Keep one snapshot across session, message and part queries.
             connection.execute_batch("BEGIN")?;
             let mut statement = connection.prepare("SELECT id, directory, title, time_created, time_updated FROM session WHERE parent_id IS NULL ORDER BY id")?;
             let rows = statement.query_map([], |r| {
@@ -114,7 +113,6 @@ fn json(data: String, result: &mut SourceScan) -> Option<Value> {
     }
 }
 
-/// Roles and completion belong to message.data; prose and tool state to part.data.
 fn messages(
     connection: &Connection,
     id: &str,

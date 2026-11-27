@@ -115,7 +115,6 @@ fn command_probe() {
         .notify(title, body)
         .unwrap();
     let mut desktop = session_board::notify::Delivery::desktop().unwrap();
-    // Missing command falls back to Noop and warns once.
     std::fs::remove_file(std::env::var_os("PROBE_REMOVE").unwrap()).unwrap();
     desktop.notify(title, body).unwrap();
     desktop.notify(title, body).unwrap();

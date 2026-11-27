@@ -112,13 +112,11 @@ fn local_commands_preserve_real_stuck_turns_and_recover_sampled_completions() {
         root: temp.path().into(),
         now: NOW,
     };
-    // A local command must not erase a real pending turn or make its clock recent.
     fs::write(&path, format!("{}\n{}\n", rows[0], rows[2])).unwrap();
     let scan = source.scan(&Config::default());
     assert_eq!(scan.sessions[0].status, Status::Error);
     assert_eq!(scan.sessions[0].last_activity_at, NOW - 3600);
     assert_eq!(scan.status_reasons.len(), 1);
-    // A local command at the sampled tail must not hide the previous completion.
     let ignored = |size| serde_json::json!({"type":"attachment", "text":"x".repeat(size)});
     fs::write(
         &path,

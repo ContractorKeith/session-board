@@ -54,7 +54,6 @@ fn issue107_memory_writer_spilled_before_first_snapshot_is_skipped() {
             .with_file_name("session_search.sqlite-journal")
             .exists()
     );
-    // The lock is verified in a separate process, matching a real agent writer.
     let probe=Command::new("python3").args(["-c", "import sqlite3,sys; c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro', uri=True, timeout=0)\ntry: c.execute('SELECT count(*) FROM session_docs'); raise AssertionError('writer did not spill')\nexcept sqlite3.OperationalError as e: assert 'locked' in str(e),str(e)"]).arg(&path).output().unwrap();
     assert!(
         probe.status.success(),

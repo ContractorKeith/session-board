@@ -615,7 +615,6 @@ fn issue77_tag_removal_preserves_another_writers_addition() {
     );
 }
 
-// The macOS CI filesystem rejects this filename before a source can read it.
 #[cfg(target_os = "linux")]
 #[test]
 fn issue76_doctor_counts_non_utf8_transcript_path() {

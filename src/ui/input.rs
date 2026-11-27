@@ -1,4 +1,3 @@
-//! Assemble terminal bytes before dispatch; UI work cannot change input timing.
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::{
     io,
@@ -6,7 +5,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-// Allow a little scheduling slack around the terminal's 50 ms escape grace period.
 const ESCAPE_GAP: Duration = Duration::from_millis(75);
 const PASTE_GAP: Duration = Duration::from_millis(150);
 const QUIET: Duration = Duration::from_millis(50);
@@ -62,8 +60,6 @@ impl Reader {
                         match result {
                             Ok(count) => {
                                 for event in decoder.feed(&bytes[..count], now) {
-                                    // Escape was already held by the decoder; preserve its byte time
-                                    // so the UI's defensive terminator grace does not delay it again.
                                     let at = if event == key(KeyCode::Esc, KeyModifiers::NONE) {
                                         decoder.last_byte.unwrap_or(now)
                                     } else {
@@ -117,7 +113,6 @@ impl Reader {
             .send(command)
             .map_err(|_| io::Error::other("terminal reader stopped"))?;
         loop {
-            // The reader only performs bounded raw reads, never a blocking paste decode.
             let input = self
                 .events
                 .recv()
@@ -137,7 +132,6 @@ impl Drop for Reader {
     }
 }
 
-// stdin is verified to be a TTY. Raw reads avoid buffered bytes during child handoff.
 #[repr(C)]
 struct PollFd {
     fd: i32,
@@ -246,7 +240,6 @@ impl Decoder {
                 } else if START.starts_with(&self.pending) || END.starts_with(&self.pending) {
                     break;
                 } else {
-                    // Prompts are capped separately; bound an unterminated paste too.
                     if paste.len() < 1024 * 1024 {
                         paste.push(self.pending[0]);
                     }
@@ -270,7 +263,6 @@ impl Decoder {
                     break;
                 }
                 if self.pending[1] == 27 {
-                    // Wait to distinguish a bare pair from Escape followed by a sequence.
                     if self.pending.len() == 2 {
                         break;
                     }
@@ -279,7 +271,6 @@ impl Decoder {
                     continue;
                 }
                 if matches!(self.pending[1], b'[' | b'O') {
-                    // Linux console F1-F5 have an extra [ before the final byte.
                     let start = if self.pending.starts_with(b"\x1b[[") {
                         3
                     } else {

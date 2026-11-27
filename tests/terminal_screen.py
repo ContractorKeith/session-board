@@ -67,7 +67,6 @@ class ProbeIOTests(unittest.TestCase):
         def pump():
             received.extend(read_ready(reader))
         try:
-            # The child cannot finish until the parent drains more than pipe capacity.
             with patch.object(child, 'wait', side_effect=AssertionError('use poll, not timed wait')):
                 self.assertEqual(wait_exit(child, pump, 'notify probe: backpressure exit', 5), 0)
             received.extend(drain(reader))

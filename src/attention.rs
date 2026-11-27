@@ -1,4 +1,3 @@
-//! Shared attention membership and project/session ordering.
 use crate::{
     model::{Project, Session, Status},
     state::State,

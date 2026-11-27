@@ -16,7 +16,6 @@ pub struct State {
     pub pins: Vec<PathBuf>,
     #[serde(deserialize_with = "deserialize_tags")]
     pub tags: BTreeMap<PathBuf, Vec<String>>,
-    /// Project roots or session IDs, as specified by the state file contract.
     pub archived: Vec<String>,
     pub read: BTreeMap<String, i64>,
 }
@@ -26,7 +25,6 @@ impl State {
         Ok(storage::directory("SBOARD_STATE_DIR", ".local/state/sboard")?.join("state.toml"))
     }
 
-    /// Loading is lenient; saving re-reads strictly before replacing anything.
     pub fn load(path: &Path) -> io::Result<(Self, Vec<String>)> {
         let bytes = match read_bytes(path) {
             Ok(Some(bytes)) => bytes,
@@ -47,7 +45,6 @@ impl State {
         self.pins.retain(|p| valid_path(p, &mut warnings));
         self.tags.retain(|p, _| valid_path(p, &mut warnings));
         if let Ok(home) = storage::home() {
-            // Resolve dangling links too: their spelling must keep the target's identity.
             let resolve = |root: &Path| {
                 let expanded = root
                     .strip_prefix("~")
@@ -113,7 +110,6 @@ impl State {
         self.save_changes(path, None).map(|_| ())
     }
 
-    /// Apply only edits since this instance's last successful load/save.
     pub fn merge(&self, previous: &Self, mut current: Self) -> Self {
         merge_set(&mut current.pins, &previous.pins, &self.pins);
         merge_set(&mut current.archived, &previous.archived, &self.archived);
@@ -172,7 +168,6 @@ impl State {
             }
         }
         let mut warnings = vec![];
-        // Read fully before creating a backup; read failures never leave empty copies.
         let mut current = match read_bytes(&target).map_err(|e| storage::at(&target, e))? {
             None => Self::default(),
             Some(bytes) => match parse(&bytes) {
@@ -285,7 +280,6 @@ fn now() -> i64 {
         .as_secs() as i64
 }
 
-// PathBuf considers /p and /p/ equal; union raw keys before that comparison can lose data.
 fn deserialize_tags<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<BTreeMap<PathBuf, Vec<String>>, D::Error> {

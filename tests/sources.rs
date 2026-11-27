@@ -164,7 +164,6 @@ fn attention_filters_read_marks_archives_and_ordering() {
             "claude_code:done"
         ]
     );
-    // Read keys from the two agents do not collide.
     assert_eq!(p[0].unread_count, 7);
     state.archived.push("claude_code:done".into());
     let mut p = projects();
@@ -412,7 +411,6 @@ fn tool_results_clear_pending_calls_without_ending_a_turn() {
 #[test]
 fn scan_window_and_title_unicode_limit() {
     for source in fixtures() {
-        // Window filtering follows transcript activity, not the fixture file mtime.
         let config = Config {
             window_days: 0,
             ..Default::default()

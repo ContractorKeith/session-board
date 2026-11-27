@@ -1,7 +1,5 @@
 use std::{path::Path, process::Command};
 
-/// Hermetic git: no inherited GIT_DIR (a hook running `cargo test` would otherwise commit
-/// into the developer's repo) and no global config (gpgsign, hooks path, identity).
 pub fn git(directory: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .env_remove("GIT_DIR")
@@ -33,7 +31,6 @@ pub fn git(directory: &Path, args: &[&str]) -> String {
         .into()
 }
 
-/// Isolate every binary scan from the owner's tmux server and agent store locations.
 pub fn isolate(command: &mut Command, root: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let bin = root.join("fake-bin");

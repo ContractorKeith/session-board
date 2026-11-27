@@ -20,7 +20,6 @@ pub enum Status {
     Done,
 }
 
-/// Times are Unix seconds in UTC; status is derived by a source, never persisted in state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
