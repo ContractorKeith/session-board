@@ -9,14 +9,16 @@ first two were deleted, excuses became issues, and decision records moved into A
 - No comments in `.rs`, `.py` or `.sql` files under `src/`, `tests/` and `fixtures/`. Doc
   comments count. Put the reason in a name, a test, or an ADR.
 - Exempt: `// SAFETY:` blocks, which `clippy::undocumented_unsafe_blocks` requires on every
-  `unsafe` block, and a `#!` shebang on line 1.
+  `unsafe` block, and a `#!` shebang on line 1. A SAFETY block is an own-line `// SAFETY:`
+  plus the plain `//` lines directly under it; a doc comment, a block comment or a blank line
+  ends it. Keep those continuation lines about the unsafe call, since the lint cannot tell.
 - clap help text uses `#[command(about = "...")]`, not doc comments.
 
 ## Enforcement
 - `tests/comments.rs` scans those files and fails when a file has more comment lines than
   `tests/comment-baseline.txt` allows. It also fails when a file has fewer, so the ratchet only
   tightens: run `UPDATE_COMMENT_BASELINE=1 cargo test --test comments` and commit the new
-  baseline.
+  baseline. Update mode still fails on any increase and leaves the baseline alone.
 - The baseline is empty after the first pass. A branch that adds comments, including one opened
   before this rule, fails CI until it moves them out. Raising the baseline is a decision for an
   ADR, not a fix.

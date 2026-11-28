@@ -44,7 +44,7 @@ When a comment is both, the stronger kind wins: excuse over decision over tautol
 ## 4. Tighten and check
 
 ```bash
-UPDATE_COMMENT_BASELINE=1 cargo test --test comments   # lowers the ratchet; never raise it here
+UPDATE_COMMENT_BASELINE=1 cargo test --test comments   # lowers the ratchet; refuses any increase
 cargo fmt --all --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
