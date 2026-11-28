@@ -15,12 +15,6 @@ use std::{
 };
 use tempfile::TempDir;
 
-static PROCESS_FIXTURES: std::sync::Mutex<()> = std::sync::Mutex::new(());
-fn process_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
-    PROCESS_FIXTURES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
 fn pane_record(fields: &[&str]) -> String {
     fields
         .iter()
@@ -34,12 +28,10 @@ fn script(path: &Path, text: &str) {
 }
 struct Sandbox {
     temp: TempDir,
-    _guard: std::sync::MutexGuard<'static, ()>,
 }
 impl Sandbox {
     fn new() -> Self {
         let s = Self {
-            _guard: process_fixture_guard(),
             temp: tempfile::tempdir().unwrap(),
         };
         for dir in [
@@ -840,7 +832,7 @@ fn issue57_doctor_distinguishes_version_no_server_missing_and_names_agents() {
 }
 
 #[test]
-fn issue51_fifty_sessions_twenty_panes_scan_fast() {
+fn issue51_fifty_sessions_twenty_panes_list_panes_once_per_scan() {
     let s = Sandbox::new();
     s.session("claude_code");
     let text = fs::read_to_string(s.path("claude/projects/project/session.jsonl")).unwrap();
@@ -872,26 +864,24 @@ fn issue51_fifty_sessions_twenty_panes_scan_fast() {
         &s.path("bin/ps"),
         "echo consulted >> \"$RECORD_ARGS\"\nprintf '1 0 bash\\n'",
     );
-    let mut fastest = std::time::Duration::MAX;
-    for _ in 0..3 {
-        let started = std::time::Instant::now();
+    for run in 1..=3 {
         success(s.cmd().args(["list", "--all", "--json"]).output().unwrap());
-        fastest = fastest.min(started.elapsed());
+        let calls = fs::read_to_string(s.path("tmux-args")).unwrap();
+        let listings = calls
+            .split("CALL\n")
+            .filter(|call| call.lines().any(|arg| arg == "list-panes"))
+            .count();
+        assert_eq!(listings, run, "{calls}");
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(
+            fs::read_to_string(s.path("args")).unwrap().lines().count(),
+            run
+        );
     }
-    assert!(
-        fastest < std::time::Duration::from_secs(1),
-        "fastest scan took {fastest:?}"
-    );
-    #[cfg(not(target_os = "linux"))]
-    assert_eq!(
-        fs::read_to_string(s.path("args")).unwrap().lines().count(),
-        3
-    );
 }
 
 #[test]
 fn issue46_private_tmux_literal_launch_and_issue58_closed_terminal_exit() {
-    let _guard = process_fixture_guard();
     let out = Command::new("python3")
         .arg("tests/tmux.py")
         .arg(env!("CARGO_BIN_EXE_sboard"))
@@ -1037,7 +1027,6 @@ exec "$REAL_GIT" "$@"
 
 #[test]
 fn issue79_private_tmux_cwd_cannot_forge_pane_records() {
-    let _guard = process_fixture_guard();
     let out = Command::new("python3")
         .arg("tests/tmux.py")
         .arg(env!("CARGO_BIN_EXE_sboard"))
@@ -1054,7 +1043,6 @@ fn issue79_private_tmux_cwd_cannot_forge_pane_records() {
 
 #[test]
 fn issue80_private_tmux_literal_hash_session_jumps() {
-    let _guard = process_fixture_guard();
     let out = Command::new("python3")
         .arg("tests/tmux.py")
         .arg(env!("CARGO_BIN_EXE_sboard"))
@@ -1071,7 +1059,6 @@ fn issue80_private_tmux_literal_hash_session_jumps() {
 
 #[test]
 fn issue81_private_tmux_session_removed_after_display_reports_error() {
-    let _guard = process_fixture_guard();
     let out = Command::new("python3")
         .arg("tests/tmux.py")
         .arg(env!("CARGO_BIN_EXE_sboard"))
