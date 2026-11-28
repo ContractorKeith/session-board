@@ -10,7 +10,7 @@ use std::{fs, path::Path, process::Command, time::Duration};
 fn probe(mode: &str) {
     let temp = tempfile::tempdir().unwrap();
     let mut command = Command::new(std::env::current_exe().unwrap());
-    common::no_tmux(&mut command, temp.path());
+    common::isolate(&mut command, temp.path());
     let output = command
         .args(["--ignored", "--exact", "watch_round2_probe"])
         .current_dir(temp.path())
@@ -59,6 +59,8 @@ fn watch_round2_probe() {
     let home = Path::new(&home);
     fs::create_dir_all(home.join("claude/projects")).unwrap();
     fs::create_dir_all(home.join("codex/sessions")).unwrap();
+    fs::create_dir_all(home.join("config")).unwrap();
+    fs::write(home.join("config/config.toml"), "window_days = 36500\n").unwrap();
     let grok = home.join("custom-grok/sessions/session_search.sqlite");
     let code = if mode == "relative" {
         home.join("opencode.db")

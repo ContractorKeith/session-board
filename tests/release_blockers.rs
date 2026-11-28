@@ -42,7 +42,7 @@ fn local_slash_commands_do_not_start_assistant_turns() {
 
 fn command(root: &std::path::Path) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_sboard"));
-    common::no_tmux(&mut c, root);
+    common::isolate(&mut c, root);
     c.env("HOME", root)
         .env("SBOARD_CONFIG_DIR", root.join("config"))
         .env("SBOARD_STATE_DIR", root.join("state"))

@@ -155,7 +155,7 @@ fn issue85_relative_database_override_resolves_before_doctor() {
         .execute_batch(include_str!("../fixtures/opencode/opencode.sql"))
         .unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_sboard"));
-    common::no_tmux(&mut command, temp.path());
+    common::isolate(&mut command, temp.path());
     command
         .current_dir(temp.path())
         .env("HOME", temp.path())
