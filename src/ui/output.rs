@@ -17,7 +17,8 @@ impl Output {
     fn finish<T>(result: io::Result<T>, fallback: T) -> io::Result<T> {
         match result {
             Err(error)
-                if error.raw_os_error() == Some(5) || error.kind() == io::ErrorKind::BrokenPipe =>
+                if error.raw_os_error() == Some(libc::EIO)
+                    || error.kind() == io::ErrorKind::BrokenPipe =>
             {
                 CLOSED.store(true, Ordering::Relaxed);
                 Ok(fallback)

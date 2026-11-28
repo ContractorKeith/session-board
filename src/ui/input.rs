@@ -132,28 +132,14 @@ impl Drop for Reader {
     }
 }
 
-#[repr(C)]
-struct PollFd {
-    fd: i32,
-    events: i16,
-    revents: i16,
-}
-#[cfg(target_os = "linux")]
-type PollCount = std::os::raw::c_ulong;
-#[cfg(not(target_os = "linux"))]
-type PollCount = u32;
-unsafe extern "C" {
-    fn poll(fds: *mut PollFd, count: PollCount, timeout: i32) -> i32;
-    fn read(fd: i32, bytes: *mut std::ffi::c_void, count: usize) -> isize;
-}
 fn read_bytes(bytes: &mut [u8], timeout: Duration) -> io::Result<usize> {
-    let mut fd = PollFd {
-        fd: 0,
-        events: 1,
+    let mut fd = libc::pollfd {
+        fd: libc::STDIN_FILENO,
+        events: libc::POLLIN,
         revents: 0,
     };
     // SAFETY: one valid pollfd is writable for the duration of the call.
-    let ready = unsafe { poll(&mut fd, 1, timeout.as_millis() as i32) };
+    let ready = unsafe { libc::poll(&mut fd, 1, timeout.as_millis() as i32) };
     if ready < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -161,7 +147,7 @@ fn read_bytes(bytes: &mut [u8], timeout: Duration) -> io::Result<usize> {
         return Ok(0);
     }
     // SAFETY: bytes is writable for count bytes; this thread is the only board reader.
-    let count = unsafe { read(0, bytes.as_mut_ptr().cast(), bytes.len()) };
+    let count = unsafe { libc::read(libc::STDIN_FILENO, bytes.as_mut_ptr().cast(), bytes.len()) };
     if count < 0 {
         Err(io::Error::last_os_error())
     } else {
