@@ -3,6 +3,7 @@ use crate::{
     state::State,
 };
 use serde::Serialize;
+use serde_json::Value;
 use std::{
     borrow::Cow,
     io::{self, Write},
@@ -93,6 +94,35 @@ pub(super) fn attention(
 }
 
 fn write(out: &mut impl Write, rows: &impl Serialize) -> io::Result<()> {
-    let value = serde_json::to_value(rows)?;
+    let value = sorted(serde_json::to_value(rows)?);
     writeln!(out, "{}", serde_json::to_string_pretty(&value)?)
+}
+
+fn sorted(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<_> = map.into_iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            Value::Object(entries.into_iter().map(|(k, v)| (k, sorted(v))).collect())
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(sorted).collect()),
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keys_are_sorted_whatever_order_serde_produced() {
+        let mut map = serde_json::Map::new();
+        map.insert("zeta".into(), serde_json::json!([{"b": 1, "a": 2}]));
+        map.insert("alpha".into(), Value::Null);
+        let mut out = Vec::new();
+        write(&mut out, &Value::Object(map)).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let order = ["\"alpha\"", "\"zeta\"", "\"a\"", "\"b\""].map(|k| text.find(k).unwrap());
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "{text}");
+    }
 }
