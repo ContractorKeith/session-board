@@ -116,8 +116,9 @@ def case(binary, tui, background=False, hangup=False):
             output = b''
             os.write(master, b'\x03')
             if tui:
-                wait_for(lambda: b'\x1b[?1049h' in output, 'board returns after child exit')
-                time.sleep(.3)
+                wait_for(lambda: b'\x1b[?1049h' in output and
+                         '\u250cProjects'.encode() in output[output.index(b'\x1b[?1049h'):],
+                         'board redraws after child exit and input drain')
                 os.write(master, b'q')
             wait_for(lambda: b'JOB_READY>' in output, 'job completes after fg and Ctrl-C')
             try:
