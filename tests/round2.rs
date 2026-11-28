@@ -510,7 +510,7 @@ fn issue28_head_reaches_owner_prompt_and_index_titles_are_sanitized() {
 }
 
 #[test]
-fn issue23_fallback_limit_skips_instead_of_listing_old_head() {
+fn issue23_huge_tail_without_a_boundary_lists_idle_without_head_status() {
     let temp = tempfile::tempdir().unwrap();
     fs::create_dir(temp.path().join("project")).unwrap();
     let path = temp.path().join("project/session.jsonl");
@@ -528,9 +528,11 @@ fn issue23_fallback_limit_skips_instead_of_listing_old_head() {
         now: NOW,
     }
     .scan(&Config::default());
-    assert!(scanned.sessions.is_empty());
-    assert_eq!(scanned.skipped_sessions, 1);
-    assert!(scanned.warnings[0].contains("64 MiB"));
+    assert_eq!(scanned.sessions.len(), 1);
+    assert_eq!(scanned.sessions[0].status, Status::Idle);
+    assert_eq!(scanned.skipped_sessions, 0);
+    assert_eq!(scanned.skipped_lines, 1);
+    assert!(scanned.warnings[0].contains("1 MiB tail cap"));
 }
 
 #[test]

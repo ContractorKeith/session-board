@@ -10,7 +10,6 @@ use std::{
 const HEAD_BYTES: u64 = 256 * 1024;
 const TAIL_BYTES: u64 = 64 * 1024;
 const MAX_TAIL_BYTES: u64 = 1024 * 1024;
-const FALLBACK_BYTES: u64 = 64 * 1024 * 1024;
 pub fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -80,11 +79,6 @@ pub fn records(
         }
     }
     if cursor == limit && limit > head_end && !found {
-        if !aligned && size - head_end > FALLBACK_BYTES {
-            return Err(io::Error::other(
-                "no complete tail boundary; fallback exceeds 64 MiB (1 MiB tail cap reached)",
-            ));
-        }
         result.skipped_lines += 1;
         result.warnings.push(format!(
             "{}: meaningful tail not found within 1 MiB tail cap",

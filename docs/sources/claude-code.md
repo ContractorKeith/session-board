@@ -26,9 +26,8 @@ including the record crossing the nominal boundary. When the tail has no meaning
 activity, extend backwards in 64 KiB steps until activity is found or the head is
 reached. Alignment and recovery share a hard 1 MiB total tail cap. At the cap,
 retain the source's fallback status and report one skipped line plus a path-specific
-`1 MiB tail cap` warning in doctor. Never parse the left seam fragment. Oversized
-unrecoverable transcripts beyond the old 64 MiB fallback threshold still skip
-the session with a reason, without reading that middle.
+`1 MiB tail cap` warning in doctor, whatever the file size. Never parse the left
+seam fragment.
 Sampled malformed/truncated/invalid-UTF-8
 records count as skipped lines; seam fragments do not. Empty/unreadable or invalid
 sessions increment skipped sessions. Missing/unreadable stores increment skipped
@@ -79,7 +78,7 @@ Base fixtures under `fixtures/claude_code/project/`, fixed clock 12:00 UTC:
 
 `tests/round2.rs` creates temporary regression fixtures through the Source seam:
 issue23 covers large final records (including an 8-day-old head), aligned tail
-starts, 64 KiB/128 KiB ±1 records and the 64 MiB fallback cap; issue24 covers prompt,
+starts, 64 KiB/128 KiB ±1 records and a 70 MiB file with no boundary in the tail cap; issue24 covers prompt,
 tool result and interruption tails; issue25 covers tool failure/recovery and last
 API errors; issue28 covers injected metadata/control characters; issue29 covers an
 answered question followed by thinking-only completion; issue32 covers cwd changes.

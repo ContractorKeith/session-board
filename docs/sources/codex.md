@@ -33,9 +33,8 @@ including the record crossing the nominal boundary. When the tail has no meaning
 activity, extend backwards in 64 KiB steps until activity is found or the head is
 reached. Alignment and recovery share a hard 1 MiB total tail cap. At the cap,
 retain the source's fallback status and report one skipped line plus a path-specific
-`1 MiB tail cap` warning in doctor. Never parse the left seam fragment. Oversized
-unrecoverable transcripts beyond the old 64 MiB fallback threshold still skip
-the session with a reason, without reading that middle.
+`1 MiB tail cap` warning in doctor, whatever the file size. Never parse the left
+seam fragment.
 Sampled malformed/truncated/invalid-UTF-8 records increment skipped lines; seam
 fragments do not. Missing/unreadable stores increment skipped stores. Empty files,
 invalid cwds, excluded provenance and unreadable transcripts increment skipped
