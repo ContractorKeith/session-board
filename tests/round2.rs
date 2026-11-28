@@ -74,7 +74,7 @@ fn result(error: bool) -> Value {
 }
 fn command(temp: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sboard"));
-    common::no_tmux(&mut cmd, temp);
+    common::isolate(&mut cmd, temp);
     cmd.env("HOME", temp)
         .env_remove("GROK_HOME")
         .env_remove("OPENCODE_DB")

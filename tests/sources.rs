@@ -190,7 +190,7 @@ fn attention_filters_read_marks_archives_and_ordering() {
 }
 fn command(temp: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_sboard"));
-    common::no_tmux(&mut command, temp);
+    common::isolate(&mut command, temp);
     command
         .env("HOME", temp)
         .env_remove("GROK_HOME")

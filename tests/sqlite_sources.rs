@@ -41,7 +41,7 @@ fn no_sidecars(path: &Path) {
 }
 fn command(home: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_sboard"));
-    common::no_tmux(&mut command, home);
+    common::isolate(&mut command, home);
     command
         .env("HOME", home)
         .env("SBOARD_STATE_DIR", home.join("state"))

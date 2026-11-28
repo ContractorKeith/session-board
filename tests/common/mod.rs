@@ -33,8 +33,8 @@ pub fn git(directory: &Path, args: &[&str]) -> String {
         .into()
 }
 
-/// Isolate every binary scan from the owner's tmux server.
-pub fn no_tmux(command: &mut Command, root: &Path) {
+/// Isolate every binary scan from the owner's tmux server and agent store locations.
+pub fn isolate(command: &mut Command, root: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let bin = root.join("fake-bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -46,5 +46,8 @@ pub fn no_tmux(command: &mut Command, root: &Path) {
             "PATH",
             format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
         )
-        .env_remove("TMUX");
+        .env_remove("TMUX")
+        .env_remove("GROK_HOME")
+        .env_remove("OPENCODE_DB")
+        .env_remove("XDG_DATA_HOME");
 }

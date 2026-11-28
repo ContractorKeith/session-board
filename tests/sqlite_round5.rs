@@ -24,7 +24,7 @@ fn database(path: &Path) {
 }
 fn command(home: &Path, control: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_sboard"));
-    common::no_tmux(&mut command, control);
+    common::isolate(&mut command, control);
     command
         .env("HOME", home)
         .env("GROK_HOME", home.join(".grok"))

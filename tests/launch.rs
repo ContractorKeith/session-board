@@ -69,7 +69,7 @@ impl Sandbox {
     }
     fn cmd(&self) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_sboard"));
-        common::no_tmux(&mut cmd, self.temp.path());
+        common::isolate(&mut cmd, self.temp.path());
         cmd.env(
             "PATH",
             format!(

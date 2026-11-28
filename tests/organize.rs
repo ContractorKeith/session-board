@@ -115,15 +115,17 @@ fn concurrent_saves_merge_and_explicit_removals_survive() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
+    let ticks = std::sync::Barrier::new(2);
     std::thread::scope(|scope| {
         for side in ["left", "right"] {
-            let path = &path;
+            let (path, ticks) = (&path, &ticks);
             scope.spawn(move || {
                 let mut state = State::default();
                 state.pins.push(format!("/{side}").into());
                 for tick in 0..30 {
                     state.read.insert(format!("codex:{side}"), now - 29 + tick);
                     state.save(path).unwrap();
+                    ticks.wait();
                 }
             });
         }
@@ -205,6 +207,12 @@ fn issue75_cli_defaults_are_project_activity_despite_saved_preferences() {
         ..Default::default()
     };
     state.save(&temp.path().join("state/state.toml")).unwrap();
+    fs::create_dir_all(temp.path().join("config")).unwrap();
+    fs::write(
+        temp.path().join("config/config.toml"),
+        "window_days = 36500\n",
+    )
+    .unwrap();
     let run = |args: &[&str]| {
         let output = Command::new(env!("CARGO_BIN_EXE_sboard"))
             .args(args)
