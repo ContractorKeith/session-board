@@ -436,3 +436,31 @@ fn scan_window_and_title_unicode_limit() {
     assert_eq!(scanned.sessions[0].title, "é".repeat(60));
     assert_eq!(scanned.sessions[0].last_activity_at, NOW - 60);
 }
+
+#[test]
+fn scan_files_never_opens_excluded_files() {
+    for source in fixtures() {
+        let full = source.scan(&Config::default());
+        let default = source.scan_files(&Config::default(), &|_| true);
+        assert_eq!(default, full);
+        assert_eq!(full.skipped_lines, 1);
+
+        let seen = std::cell::RefCell::new(Vec::new());
+        let filtered = source.scan_files(&Config::default(), &|path| {
+            seen.borrow_mut().push(path.to_path_buf());
+            !path.to_string_lossy().contains("malformed")
+        });
+        assert_eq!(filtered.skipped_lines, 0);
+        assert_eq!(filtered.sessions.len(), full.sessions.len() - 1);
+        assert!(
+            seen.borrow()
+                .iter()
+                .any(|path| path.to_string_lossy().contains("malformed"))
+        );
+
+        let none = source.scan_files(&Config::default(), &|_| false);
+        assert!(none.sessions.is_empty());
+        assert_eq!(none.skipped_lines, 0);
+        assert_eq!(none.skipped_sessions, 0);
+    }
+}

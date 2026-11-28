@@ -22,9 +22,15 @@ impl Source for Codex {
         Agent::Codex
     }
     fn scan(&self, config: &Config) -> SourceScan {
+        self.scan_files(config, &|_| true)
+    }
+    fn scan_files(&self, config: &Config, include: &dyn Fn(&Path) -> bool) -> SourceScan {
         let mut result = SourceScan::default();
         let titles = titles(&self.index, &mut result);
-        for path in read::files(&self.root, true, false, &mut result) {
+        for path in read::files(&self.root, true, false, &mut result)
+            .into_iter()
+            .filter(|path| include(path))
+        {
             match session(&path, self.now, &titles, &mut result) {
                 Some(s)
                     if self.now - s.last_activity_at <= i64::from(config.window_days) * 86400 =>

@@ -26,6 +26,13 @@ pub struct SourceScan {
 pub trait Source {
     fn agent(&self) -> Agent;
     fn scan(&self, config: &Config) -> SourceScan;
+    fn scan_files(
+        &self,
+        config: &Config,
+        _include: &dyn Fn(&std::path::Path) -> bool,
+    ) -> SourceScan {
+        self.scan(config)
+    }
 }
 
 pub type Registry = Vec<Box<dyn Source>>;
