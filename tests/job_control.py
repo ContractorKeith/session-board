@@ -117,7 +117,7 @@ def case(binary, tui, background=False, hangup=False):
             os.write(master, b'\x03')
             if tui:
                 wait_for(lambda: b'\x1b[?1049h' in output, 'board returns after child exit')
-                time.sleep(.3)  # Existing handoff input-discard window.
+                time.sleep(.3)
                 os.write(master, b'q')
             wait_for(lambda: b'JOB_READY>' in output, 'job completes after fg and Ctrl-C')
             try:
@@ -126,13 +126,11 @@ def case(binary, tui, background=False, hangup=False):
             except ProcessLookupError:
                 pass
             os.write(master, b'exit\n')
-            # macOS can wait for PTY output to drain before finishing session exit.
             wait_for(lambda: shell.poll() is not None, 'shell exits after exit command')
             assert shell.returncode == 0
             print(('TUI' if tui else 'CLI') + (', bg' if background else '') +
                   ': Ctrl-Z returns shell; fg resumes agent; Ctrl-C returns normally')
         finally:
-            # Release terminal drain before waiting, including failed-probe cleanup.
             if master is not None:
                 os.close(master)
             os.close(slave)

@@ -165,7 +165,6 @@ fn session(
     let record_count = records.len();
     for (index, v) in records.into_iter().enumerate() {
         if boundary == Some(index) {
-            // Task lifecycle survives omitted history; tail task events override it.
             tail = Tail {
                 pending: task_active,
                 ..Default::default()

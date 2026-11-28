@@ -154,7 +154,6 @@ fn no_color_and_palette_statuses() {
             .any(|cell| cell.fg != ratatui::style::Color::Reset)
     );
 }
-// FSEvents can deliver a coalesced batch after the first debounce window.
 fn drain_requests(requests: &std::sync::mpsc::Receiver<()>) -> usize {
     let deadline = Instant::now() + watch::DEBOUNCE + Duration::from_secs(2);
     let mut count = 0;
@@ -193,7 +192,6 @@ fn recursive_watcher_debounces_single_and_burst_changes() {
     }
 }
 
-// Invoked in a child with piped output, or under a PTY for manual hygiene checks.
 #[test]
 #[ignore]
 fn terminal_probe() {
@@ -204,7 +202,6 @@ fn terminal_probe() {
                 .name("main".into())
                 .spawn(move || {
                     if hook {
-                        // Exit in the previous hook, before unwinding can run the guard.
                         std::panic::set_hook(Box::new(|_| std::process::exit(86)));
                     }
                     let result = ui::terminal_session(|terminal| {
@@ -448,7 +445,6 @@ fn burst_coalesces_and_recreated_root_reattaches() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("sessions");
     fs::create_dir(&root).unwrap();
-    // The configured store may be a symlink; events name its canonical target.
     #[cfg(unix)]
     let watched = {
         let link = temp.path().join("store-link");
@@ -465,7 +461,6 @@ fn burst_coalesces_and_recreated_root_reattaches() {
             .expect("burst_coalesces_and_recreated_root_reattaches: waiting for watcher attachment/removal acknowledgement")
             .is_empty()
     );
-    // Keep all 200 real writes within one debounce window, even under build load.
     use std::io::Write;
     let started = Instant::now();
     let mut file = fs::File::create(root.join("session.jsonl")).unwrap();
@@ -485,7 +480,6 @@ fn burst_coalesces_and_recreated_root_reattaches() {
         "200-write burst produced {count} requests"
     );
     fs::remove_dir_all(&root).unwrap();
-    // Synchronize with watcher state instead of guessing when backend events arrive.
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let warnings = watcher
@@ -509,7 +503,6 @@ fn burst_coalesces_and_recreated_root_reattaches() {
             break;
         }
     }
-    // Drain attachment/deletion requests before proving the replacement is watched.
     drain_requests(&requests);
     fs::write(root.join("new.jsonl"), "changed").unwrap();
     requests.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -778,7 +771,6 @@ fn issue71_failed_save_survives_rescan_with_error_message() {
         "{}",
         app.status_text()
     );
-    // #116: the reason precedes the long path, so a 100-column footer keeps it.
     assert!(
         app.status_text().starts_with("state: Permission denied"),
         "{}",
@@ -1110,7 +1102,6 @@ fn issue94_prompt_paste_and_stray_terminators_share_the_live_router() {
     let saved = State::load(app.organize.path.as_ref().unwrap()).unwrap().0;
     assert_eq!(saved.tags[&app.projects[0].root], ["barpq", "foo"]);
     assert!(saved.pins.is_empty());
-    // Suffix keys of the same paste burst cannot act after Enter closes the prompt.
     assert_eq!(
         app.event(
             Event::Key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE)),
@@ -1119,7 +1110,6 @@ fn issue94_prompt_paste_and_stray_terminators_share_the_live_router() {
         Action::None
     );
     assert!(!app.projects[0].pinned);
-    // Only a quiet boundary observed by the reader ends the paste burst.
     app.input_idle(now + Duration::from_millis(51));
     assert_eq!(
         app.event(
@@ -1564,7 +1554,6 @@ fn tui_notifications_use_real_scan_events_and_config_without_blocking_help() {
     }
     let timed_out = child.try_wait().unwrap().is_none();
     if timed_out {
-        // SIGTERM lets Python's deadline handler run its board/notifier cleanup.
         let _ = Command::new("kill")
             .args(["-TERM", &child.id().to_string()])
             .status();

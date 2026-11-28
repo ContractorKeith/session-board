@@ -47,7 +47,6 @@ fn unchanged_except_shm(
     before: &[(std::ffi::OsString, Vec<u8>)],
     after: &[(std::ffi::OsString, Vec<u8>)],
 ) {
-    // Compare every captured byte, allowing only SQLite's explicitly approved SHM protocol.
     let wal = before
         .iter()
         .any(|(n, _)| n.to_string_lossy().ends_with("-wal"))

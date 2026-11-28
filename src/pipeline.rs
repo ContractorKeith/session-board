@@ -1,4 +1,3 @@
-//! The common cold-scan pipeline for list and the TUI.
 use crate::{
     cli::{self, AgentFilter, StatusFilter},
     config::Config,
@@ -16,7 +15,6 @@ pub struct Options {
     pub all: bool,
     pub sort: Option<scan::Sort>,
     pub group: Option<scan::Group>,
-    /// The background TUI scan retains archives for its local view toggle.
     pub show_archived: bool,
 }
 impl Default for Options {

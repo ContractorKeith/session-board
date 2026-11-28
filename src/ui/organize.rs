@@ -28,7 +28,6 @@ pub struct TagPrompt {
     pub tags: Vec<String>,
 }
 impl App {
-    /// All terminal events pass here, including fake streams in the regression tests.
     pub fn event(&mut self, event: Event, now: Instant) -> Action {
         match event {
             Event::Paste(text) => {
@@ -71,7 +70,6 @@ impl App {
                         return Action::None;
                     }
                     self.flush_terminator();
-                    // Escape may have closed the prompt; recheck the paste quarantine.
                     return self.event(Event::Key(key), now);
                 }
                 let progress = if key.code == KeyCode::Esc && key.modifiers.is_empty() {
@@ -119,7 +117,6 @@ impl App {
     fn flush_terminator(&mut self) {
         self.organize.terminator_progress = 0;
         self.organize.terminator_deadline = None;
-        // A partial terminator contains only Escape, [, digits and ~: no action keys.
         for key in std::mem::take(&mut self.organize.terminator) {
             self.key(key);
         }
@@ -357,7 +354,6 @@ impl App {
     }
 }
 
-/// Reason first: a long state path would otherwise push it off a narrow footer (#116).
 fn state_error(error: &std::io::Error) -> String {
     let text = error.to_string();
     match text.split_once(": ") {

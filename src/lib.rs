@@ -1,4 +1,3 @@
-// Keep production unwraps checked without restricting integration-test helpers.
 #![cfg_attr(not(test), warn(clippy::unwrap_used))]
 
 pub mod attention;

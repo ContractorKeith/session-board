@@ -114,7 +114,6 @@ fn watch_round2_probe() {
             })
             .unwrap();
         drop(connection);
-        // Far shorter than the 60-second quiet refresh: only a watcher request can pass.
         let result = scans
             .results
             .recv_timeout(Duration::from_secs(7))

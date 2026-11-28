@@ -24,7 +24,6 @@ fn fixture() -> (Vec<Project>, State) {
     (projects, state)
 }
 
-// One byte-level contract covers field order, whitespace, optional fields and escaping.
 #[test]
 fn json_output_contract() {
     let (mut projects, mut state) = fixture();

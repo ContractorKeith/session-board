@@ -162,7 +162,6 @@ fn issue23_large_final_record_and_exact_tail_boundary() {
         );
         assert_eq!(scanned.sessions[0].last_activity_at, NOW - 5);
     }
-    // First complete tail line is significant even when followed by ignored lines.
     let complete = format!("{}\n", tool());
     let padding_len = 65536 - complete.len();
     let ignored = json!({"type":"attachment","padding":""});
@@ -718,7 +717,6 @@ fn bounded_output(mut command: Command) -> std::process::Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    // Leave scheduling margin around the production git probe's two-second timeout.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     loop {
         if child.try_wait().unwrap().is_some() {

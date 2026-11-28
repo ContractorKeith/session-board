@@ -12,11 +12,9 @@ pub struct Scan {
     pub skipped_stores: usize,
     pub skipped_sessions: usize,
     pub warnings: Vec<String>,
-    /// Archive entries in force when this scan ran; queued scans keep their own mute (#116).
     pub archived: Vec<String>,
 }
 
-/// Root discovery is supplied by the caller; grouping itself does no I/O.
 pub fn scan(
     registry: &Registry,
     config: &Config,
@@ -147,7 +145,6 @@ pub fn rank(session: &crate::model::Session, state: &State) -> u8 {
     }
 }
 
-/// Tag groups retain each session's real project_root for organizing and launch.
 pub fn organize(projects: &mut Vec<Project>, state: &State, sort: Sort, group: Group) {
     if group == Group::Tag {
         let mut groups: BTreeMap<PathBuf, Project> = BTreeMap::new();

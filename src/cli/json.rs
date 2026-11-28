@@ -1,4 +1,3 @@
-//! Typed CLI projections; domain records remain independent of output-only fields.
 use crate::{
     model::{Project, Session},
     state::State,
@@ -94,7 +93,6 @@ pub(super) fn attention(
 }
 
 fn write(out: &mut impl Write, rows: &impl Serialize) -> io::Result<()> {
-    // Value retains the existing sorted object keys and serialization-before-write behavior.
     let value = serde_json::to_value(rows)?;
     writeln!(out, "{}", serde_json::to_string_pretty(&value)?)
 }

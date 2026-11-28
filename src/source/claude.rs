@@ -44,7 +44,6 @@ enum LocalCommand {
 }
 
 fn local_command(content: &serde_json::Value) -> Option<LocalCommand> {
-    // A tool result (or any non-text block) is never a native command record.
     if content
         .as_array()
         .is_some_and(|parts| parts.iter().any(|part| part["type"] != "text"))
@@ -112,7 +111,6 @@ fn session(path: &Path, now: i64, result: &mut SourceScan) -> Option<Session> {
     let mut tail = Tail::default();
     let record_count = records.len();
     for (index, v) in records.into_iter().enumerate() {
-        // The omitted middle may contain completions; head status is not tail evidence.
         if boundary == Some(index) {
             tail = Tail::default();
         }
@@ -156,7 +154,6 @@ fn session(path: &Path, now: i64, result: &mut SourceScan) -> Option<Session> {
         if kind == "user"
             && let Some(command) = local_command(&message["content"])
         {
-            // Commands supply metadata but do not refresh the previous turn's clock.
             last.get_or_insert(time);
             if command == LocalCommand::Exit {
                 tail = Tail::default();

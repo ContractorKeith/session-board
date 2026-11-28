@@ -11,7 +11,6 @@ pub struct Tail {
     pub explicit_error: bool,
 }
 
-/// PLAN §6 precedence is intentional: an ended turn wins over an earlier error.
 pub fn derive(tail: &Tail, last_activity: i64, now: i64) -> Status {
     let age = now.saturating_sub(last_activity).max(0);
     if tail.pending {

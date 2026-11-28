@@ -208,7 +208,6 @@ impl App {
             return Action::None;
         }
         if self.help {
-            // Short terminals clip the help text, so it scrolls instead (#18).
             let last = HELP.lines().count().saturating_sub(1) as u16;
             self.help_scroll = match key.code {
                 KeyCode::Char('j') | KeyCode::Down => self.help_scroll.saturating_add(1),
@@ -366,7 +365,6 @@ impl App {
     }
 }
 
-// The guard restores the terminal on setup errors, event-loop errors and unwinding.
 struct TerminalGuard;
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
@@ -512,8 +510,6 @@ fn event_loop(
                     }
                 }
                 Err(error) => {
-                    // The forwarded panic hook may have scrolled stderr through the frame.
-                    // Reset the fullscreen buffers without querying the cursor position.
                     terminal.resize(terminal.size()?.into())?;
                     app.scan_warnings.clear();
                     app.summary = format!("scan: {error}");

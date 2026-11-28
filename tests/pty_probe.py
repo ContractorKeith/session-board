@@ -16,7 +16,7 @@ def read_ready(fd, timeout=.005):
     except BlockingIOError:
         return b''
     except OSError as error:
-        if error.errno == errno.EIO:  # PTY hangup on Linux.
+        if error.errno == errno.EIO:
             return b''
         raise
 

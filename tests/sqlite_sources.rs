@@ -71,7 +71,7 @@ fn grok_fixture_rules_and_bounded_utf8_content() {
     assert_eq!(recent.title, "Title placeholder");
     assert_eq!(recent.last_activity_at, NOW - 60);
     assert_eq!(recent.started_at, NOW - 60);
-    assert_eq!(recent.status, Status::Done); // A question cannot imply waiting in this flat index.
+    assert_eq!(recent.status, Status::Done);
     assert_eq!(recent.resume_hint, "grok --resume=recent");
     assert_eq!(recent.transcript_path, path);
     let old = result.sessions.iter().find(|s| s.id == "grok:old").unwrap();
@@ -187,7 +187,6 @@ fn sqlite_closed_wal_without_sidecars_lists_rows_without_creation() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("store.db");
     database(&path, include_str!("../fixtures/grok/session_search.sql"));
-    // Persist WAL mode in the header, with all data checkpointed and sidecars removed.
     Connection::open(&path)
         .unwrap()
         .execute_batch("PRAGMA journal_mode=WAL;")
@@ -267,7 +266,6 @@ fn opencode_completion_recovery_malformed_rows_and_preview_bounds() {
     let path = temp.path().join("opencode.db");
     database(&path, include_str!("../fixtures/opencode/opencode.sql"));
     let connection = Connection::open(&path).unwrap();
-    // Complete a tool; an open assistant still generates until its completion marker.
     connection
         .execute(
             "UPDATE part SET data=?1 WHERE id='working-tool'",
@@ -384,8 +382,6 @@ fn active_wal_database_and_frames_are_untouched() {
     for ((name, bytes), (after_name, after_bytes)) in before.iter().zip(&after) {
         assert_eq!(name, after_name);
         if name.to_string_lossy().ends_with("-shm") {
-            // Full SHM bytes are captured. SQLite may rewrite them only as
-            // part of the WAL protocol while an existing WAL is present.
             assert!(
                 before
                     .iter()

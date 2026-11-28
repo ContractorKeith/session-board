@@ -1,4 +1,3 @@
-//! Stop terminal writes after hangup, including Ratatui's cursor-restoring destructor.
 use std::{
     io::{self, Write},
     sync::atomic::{AtomicBool, Ordering},
@@ -17,7 +16,6 @@ pub(crate) struct Output;
 impl Output {
     fn finish<T>(result: io::Result<T>, fallback: T) -> io::Result<T> {
         match result {
-            // EIO is 5 on both supported Unix platforms; EPIPE has its own ErrorKind.
             Err(error)
                 if error.raw_os_error() == Some(5) || error.kind() == io::ErrorKind::BrokenPipe =>
             {

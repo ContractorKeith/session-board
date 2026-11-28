@@ -18,8 +18,6 @@ pub fn now() -> i64 {
         .as_secs() as i64
 }
 
-/// Keep the head and recover a meaningful tail without reading the omitted middle.
-/// Alignment and recovery share a hard 1 MiB tail budget.
 pub fn records(
     path: &Path,
     result: &mut SourceScan,
@@ -44,7 +42,6 @@ pub fn records(
     let mut tail_records = Vec::new();
     let mut tail_start = size;
     let mut found = false;
-    // Resolve the record crossing the nominal window before deciding to stop.
     let nominal = size.saturating_sub(TAIL_BYTES).max(head_end);
     let mut aligned = nominal == head_end;
     while cursor > limit {
@@ -83,7 +80,6 @@ pub fn records(
         }
     }
     if cursor == limit && limit > head_end && !found {
-        // Preserve the existing rejection of transcripts beyond the old fallback cap.
         if !aligned && size - head_end > FALLBACK_BYTES {
             return Err(io::Error::other(
                 "no complete tail boundary; fallback exceeds 64 MiB (1 MiB tail cap reached)",
@@ -114,7 +110,6 @@ fn parse(bytes: &[u8], result: &mut SourceScan) -> Vec<Value> {
         .collect()
 }
 
-/// Never follow directory symlinks while walking a store (cycles and subagent trees).
 pub fn files(root: &Path, recursive: bool, claude: bool, result: &mut SourceScan) -> Vec<PathBuf> {
     let mut paths = vec![];
     let entries = match fs::read_dir(root) {
@@ -174,7 +169,6 @@ pub fn text(content: &Value) -> String {
         })
         .unwrap_or_default()
 }
-/// Keep the most recent 8 KiB, on a UTF-8 boundary; status still uses full text.
 pub fn preview(text: &str) -> String {
     let mut start = text.len().saturating_sub(8192);
     while !text.is_char_boundary(start) {
@@ -186,8 +180,6 @@ pub fn string(value: &Value, key: &str) -> String {
     value[key].as_str().unwrap_or_default().to_owned()
 }
 
-/// Keep titles to one printable line. Strip CSI commands and OSC wrappers;
-/// retain OSC payload text after the numeric command (never execute it).
 pub fn title(text: &str) -> String {
     let mut chars = text.chars().peekable();
     let mut clean = String::new();
@@ -226,7 +218,6 @@ pub fn title(text: &str) -> String {
     clean.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// RFC3339 timestamps in the stores; UTC and numeric offsets, fractional seconds ignored.
 pub fn timestamp(value: &Value) -> Option<i64> {
     let s = value.as_str()?;
     let b = s.as_bytes();

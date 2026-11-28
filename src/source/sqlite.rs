@@ -6,8 +6,6 @@ use std::{
     time::SystemTime,
 };
 
-// Inspect the path itself: even a symlink to a regular file is not a regular
-// store/sidecar entry. Missing sidecars are normal; missing stores are counted.
 fn regular_entry(path: &Path) -> io::Result<Option<std::fs::Metadata>> {
     match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_file() => Ok(Some(meta)),
@@ -64,9 +62,7 @@ impl Stamp {
 struct Snapshot {
     database: Stamp,
     format: [u8; 2],
-    // Header change counter (24..28), version-valid-for and SQLite version (92..100).
     header: [u8; 12],
-    // WAL, SHM, rollback journal; include identity/ctime as well as size/mtime.
     sidecars: [Option<Stamp>; 3],
 }
 impl Snapshot {
@@ -100,8 +96,6 @@ impl Snapshot {
             && self.database.same_file(&other.database)
             && self.sidecars.iter().zip(&other.sidecars).enumerate().all(
                 |(index, (before, after))| match (before, after) {
-                    // A rollback writer may create/remove its journal while
-                    // holding only RESERVED; SQLite decides when reads lock.
                     _ if self.format == [1, 1] && index == 2 => true,
                     (Some(before), Some(after)) => before.same_file(after),
                     (None, None) => true,
@@ -116,7 +110,6 @@ struct Database {
     stable_snapshot: Option<Snapshot>,
 }
 
-/// Only a WAL-format store without WAL can bypass locks, with snapshot validation.
 fn open(path: &Path, result: &mut SourceScan) -> Option<Database> {
     open_with(path, result, || {})
 }
@@ -139,7 +132,6 @@ fn open_with(
             return None;
         }
     };
-    // Percent-encode URI delimiters, including literal '%' in project paths.
     let mut uri = String::from("file:");
     for byte in absolute.as_os_str().as_encoded_bytes() {
         if byte.is_ascii_alphanumeric() || b"/-._~".contains(byte) {
@@ -173,8 +165,6 @@ fn open_with(
             return None;
         }
     };
-    // sqlite3_open_v2 normally defers WAL/SHM access until the schema probe.
-    // Revalidate before that first read; the VFS also guards the later OS open.
     match Snapshot::read(&absolute) {
         Ok(after) if before.same_open_target(&after) => (),
         Ok(_) => {
@@ -206,8 +196,6 @@ fn open_with(
     })
 }
 
-/// Keep validation around the complete scan so neither source can return a
-/// stale immutable view after a writer replaces or changes a closed WAL store.
 pub(super) fn scan(
     path: &Path,
     result: &mut SourceScan,
@@ -240,7 +228,6 @@ pub(super) fn failed(path: &Path, error: &impl std::fmt::Display, result: &mut S
     result.warnings.push(format!("{}: {error}", path.display()));
 }
 
-/// Only conversion failures concern a row; step/I/O errors fail the whole store.
 pub(super) fn row<T>(row: rusqlite::Result<T>, skipped: &mut usize) -> rusqlite::Result<Option<T>> {
     match row {
         Ok(value) => Ok(Some(value)),
@@ -382,7 +369,6 @@ mod tests {
             .unwrap()
             .execute_batch("CREATE TABLE test(id)")
             .unwrap();
-        // Exercise WAL protocol with a genuinely read-only database fd.
         let writer = Connection::open(&path).unwrap();
         writer
             .execute_batch("PRAGMA journal_mode=WAL; INSERT INTO test VALUES (1)")
@@ -398,7 +384,6 @@ mod tests {
                 .filter_map(Result::ok)
                 .filter(|entry| std::fs::read_link(entry.path()).ok().as_ref() == Some(&target))
                 .collect();
-            // One writer and one reader descriptor must be distinguishable.
             let access: Vec<_> = descriptors
                 .iter()
                 .map(|entry| {
@@ -436,8 +421,6 @@ mod tests {
         let path = temp.path().join("store.db");
         let writer = Connection::open(&path).unwrap();
         writer.execute_batch("CREATE TABLE test(title TEXT); PRAGMA synchronous=OFF; PRAGMA cache_size=2; BEGIN; WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<3000) INSERT INTO test SELECT 'COMMITTED' || printf('%01000d', x) FROM n; COMMIT;").unwrap();
-        // Pre-opened writer: it starts only after open()'s schema query. Keeping
-        // it alive preserves the exclusive lock and uncommitted spilled pages.
         let mut result = SourceScan::default();
         scan(&path, &mut result, |connection, result| {
             writer.execute_batch(
@@ -679,7 +662,6 @@ mod tests {
         let raced_wal = wal.clone();
         sqlite_vfs::BEFORE_SIDECAR_OPEN.with(|hook| {
             *hook.borrow_mut() = Some(Box::new(move || {
-                // Do not panic across the C ABI. Assert the removal afterwards.
                 observed.set(std::fs::remove_file(raced_wal).is_ok());
             }));
         });

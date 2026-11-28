@@ -69,8 +69,6 @@ impl Config {
         Ok(storage::directory("SBOARD_CONFIG_DIR", ".config/sboard")?.join("config.toml"))
     }
 
-    /// Missing file: defaults. Unknown keys: warnings. A bad value or an unreadable file is an
-    /// error that names the file (#15).
     pub fn load(path: &Path) -> io::Result<(Self, Vec<String>)> {
         let text = match storage::read_text(path) {
             Ok(text) => text,

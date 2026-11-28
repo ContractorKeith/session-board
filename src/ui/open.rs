@@ -1,4 +1,3 @@
-//! One-line launch prompts; process execution stays in launch and tmux.
 use super::DefaultTerminal;
 use super::{Action, App, Row};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -48,7 +47,6 @@ impl Open {
             }
         }
     }
-    /// Prompts produce launch intent; action() retains M3's process/terminal handling.
     pub fn key(&mut self, app: &mut App, key: KeyEvent) -> Option<Action> {
         let prompt = self.prompt.take()?;
         if (key.code == KeyCode::Esc
@@ -149,7 +147,6 @@ impl Open {
                         &config.tmux.socket,
                     ));
                     app.project_organization();
-                    // Read marks can shrink the queue; keep the original open target.
                     let known_pane = session.pane.clone();
                     session = app
                         .organize
@@ -163,7 +160,6 @@ impl Open {
                         .unwrap_or(session);
                     session.pane = session.pane.or(known_pane);
                     if session.pane.is_none() {
-                        // Validate before leaving the TUI.
                         launch::resume_command(&session)?;
                         let notice = format!("no pane; resuming in {}", session.cwd.display());
                         app.message = if save_notice.is_empty() {
@@ -173,7 +169,6 @@ impl Open {
                         };
                         terminal.draw(|f| app.render(f, 0))?;
                     }
-                    // Jump failures remain errors even when the target vanished after discovery.
                     app.suspend(terminal, || launch::open(&session, &config.tmux.socket))
                 })();
                 let outcome = result.unwrap_or_else(|e| format!("error: {e}"));

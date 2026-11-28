@@ -28,7 +28,8 @@ cargo run -- doctor
 - `docs/PLAN.md` — problem, feature matrix, architecture, status rules, CLI contract,
   milestones, testing, acceptance.
 - `CONTEXT.md` — glossary. Use its words in code, issues and PRs.
-- `docs/adr/` — observe never own; Rust single binary.
+- `docs/adr/` — observe never own; Rust single binary; the why behind terminal, SQLite,
+  transcript, file, input, watcher and test rules (0003–0009); no code comments (0010).
 - `docs/sources/<agent>.md` — one page per source: paths, line types, status rules, fixtures.
 - Session logs: `~/Projects/worklog/projects/session-board.md` (not in this repo).
 
@@ -43,6 +44,8 @@ cargo run -- doctor
 - Fixtures are real transcripts with text replaced by placeholders. Every status rule has one.
 - One process, no daemon. The watcher runs inside the TUI; `list` is a cold scan.
 - Tooling is cargo, rustfmt, clippy. No nightly, no build scripts.
+- No code comments except `// SAFETY:` (ADR-0010). `tests/comments.rs` ratchets them against
+  `tests/comment-baseline.txt`; record a why in an ADR. `/delete-comment` repeats the purge.
 - One milestone = one issue = one branch = one PR = one T3 thread in its own worktree. M0 lands
   alone; M1 then M2 sequential; M3–M6 may run in parallel after M2 (merge order M3, M4, M5,
   M6); M7 last.

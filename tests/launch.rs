@@ -15,7 +15,6 @@ use std::{
 };
 use tempfile::TempDir;
 
-// Process fixtures run sequentially so the scan budget excludes competing test subprocesses.
 static PROCESS_FIXTURES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn process_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
     PROCESS_FIXTURES
@@ -119,7 +118,6 @@ impl Sandbox {
         let text = fs::read_to_string("fixtures/claude_code/project/done.jsonl")
             .unwrap()
             .replace("/projects/alpha", self.path("project").to_str().unwrap());
-        // Preserve the fixture schema, replacing cwd wherever it occurs.
         let mut rows: Vec<serde_json::Value> = text
             .lines()
             .map(|l| serde_json::from_str(l).unwrap())
@@ -383,7 +381,6 @@ fn issue59_duplicate_id_opens_most_recent_and_warns() {
     let s = Sandbox::new();
     let id = s.session("claude_code");
     let newest = s.path("claude/projects/project/session.jsonl");
-    // An older copy of the same transcript in a second store directory.
     fs::create_dir_all(s.path("claude/projects/copy")).unwrap();
     let older = s.path("claude/projects/copy/session.jsonl");
     let mut rows: Vec<serde_json::Value> = fs::read_to_string(&newest)
@@ -875,9 +872,6 @@ fn issue51_fifty_sessions_twenty_panes_scan_fast() {
         &s.path("bin/ps"),
         "echo consulted >> \"$RECORD_ARGS\"\nprintf '1 0 bash\\n'",
     );
-    // Use the best of three cold processes so unrelated parallel test scheduling
-    // does not count against the discovery budget. The unit test asserts exactly one process
-    // snapshot; this integration budget leaves headroom for concurrent release compilation.
     let mut fastest = std::time::Duration::MAX;
     for _ in 0..3 {
         let started = std::time::Instant::now();

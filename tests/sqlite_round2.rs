@@ -120,7 +120,6 @@ fn issue62_corrupt_leaf_fails_entire_store_and_type_errors_skip_rows() {
         let page_size: u32 = connection
             .query_row("PRAGMA page_size", [], |r| r.get(0))
             .unwrap();
-        // Locate a middle table leaf using SQLite's dbstat virtual table.
         let page: u32 = connection.query_row("SELECT pageno FROM dbstat WHERE name=?1 AND pagetype='leaf' ORDER BY pageno LIMIT 1 OFFSET 10", [table], |r| r.get(0)).unwrap();
         drop(connection);
         let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
@@ -310,7 +309,7 @@ fn issue66_ids_and_nul_cwds_are_rejected() {
         } else {
             opencode(&path).scan(&Config::default())
         };
-        assert_eq!(scan.skipped_sessions, 9); // Eight invalid rows plus the base relative cwd.
+        assert_eq!(scan.skipped_sessions, 9);
         let agent = if is_grok { "grok" } else { "opencode" };
         let s = scan
             .sessions
@@ -380,7 +379,6 @@ fn issue67_grok_titles_fields_future_clamp_and_millisecond_boundary() {
 #[test]
 #[ignore = "explicit RSS measurement on a 100,000-row history"]
 fn issue67_large_store_memory_probe() {
-    // Run explicitly for RSS measurements; default test keeps the costly setup out of CI.
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("large.db");
     database(&path, include_str!("../fixtures/grok/session_search.sql"));
@@ -454,6 +452,6 @@ fn issue67_window_filters_content_before_row_conversion() {
         )
         .unwrap();
     let scan = grok(&path).scan(&Config::default());
-    assert_eq!(scan.skipped_sessions, 1); // Only the relative-cwd row; old BLOB isn't decoded.
+    assert_eq!(scan.skipped_sessions, 1);
     assert!(scan.warnings.is_empty());
 }

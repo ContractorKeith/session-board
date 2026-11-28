@@ -279,14 +279,12 @@ fn project_roots_git_nested_worktree_missing_and_cached() {
     assert_eq!(roots.resolve(temp.path()), canonical);
     #[cfg(unix)]
     {
-        // macOS temp roots have a symlinked prefix; exercise that case on Linux too.
         let alias = temp.path().join("alias");
         std::os::unix::fs::symlink(temp.path(), &alias).unwrap();
         assert_eq!(roots.resolve(&alias), canonical);
     }
 }
 
-/// All subprocesses receive both overrides, never touching the owner's sboard files.
 fn command(temp: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_sboard"));
     common::isolate(&mut command, temp);
@@ -394,7 +392,6 @@ fn doctor_reports_known_paths_and_missing_stores() {
     }
 }
 
-/// #11: anything that keeps state.toml from loading is a warning plus empty state.
 #[test]
 fn unreadable_state_is_warned_about_and_treated_as_empty() {
     let temp = tempfile::tempdir().unwrap();
@@ -411,7 +408,6 @@ fn unreadable_state_is_warned_about_and_treated_as_empty() {
     assert_eq!(warnings.len(), 1);
 }
 
-/// #12: an exported-but-empty override falls back to the default under HOME.
 #[test]
 fn empty_overrides_count_as_unset() {
     let temp = tempfile::tempdir().unwrap();
@@ -454,7 +450,6 @@ fn empty_overrides_count_as_unset() {
     );
 }
 
-/// #13: saving through a symlink updates its target and keeps the mode.
 #[cfg(unix)]
 #[test]
 fn save_writes_through_symlink_and_keeps_mode() {
@@ -490,8 +485,6 @@ fn save_writes_through_symlink_and_keeps_mode() {
     assert_eq!(fs::read_dir(temp.path().join("dot")).unwrap().count(), 1);
 }
 
-/// #14: an inherited GIT_DIR must not redirect root resolution. The probe runs in a child
-/// process so the environment change cannot leak into the other git tests.
 #[test]
 fn project_roots_ignore_inherited_git_environment() {
     let temp = tempfile::tempdir().unwrap();
@@ -524,7 +517,6 @@ fn git_environment_probe() {
     assert_eq!(roots.resolve(&repo.join("nested")), repo);
 }
 
-/// #15: a config error names the file.
 #[test]
 fn config_errors_name_the_file() {
     let temp = tempfile::tempdir().unwrap();
@@ -539,13 +531,11 @@ fn config_errors_name_the_file() {
     assert!(stderr.contains("window_days"), "{stderr}");
 }
 
-/// #10: a full or closed stdout is a sentence or a quiet exit, never a panic.
 #[cfg(target_os = "linux")]
 #[test]
 fn closed_or_full_stdout_does_not_panic() {
     use std::process::Stdio;
     let temp = tempfile::tempdir().unwrap();
-    // An empty but present store keeps the exit code at 0 whether or not the pipe closes first.
     fs::create_dir_all(temp.path().join(".claude/projects")).unwrap();
     let full = fs::File::create("/dev/full").unwrap();
     let output = command(temp.path())
@@ -572,7 +562,6 @@ fn closed_or_full_stdout_does_not_panic() {
     );
 }
 
-/// Sessions within a project are newest first, ties by id.
 #[test]
 fn scan_sorts_sessions_newest_first_then_by_id() {
     let mut a = session("b", "/p");
@@ -596,7 +585,6 @@ fn scan_sorts_sessions_newest_first_then_by_id() {
     assert_eq!(ids, ["c", "a", "b"]);
 }
 
-/// A symlinked config or state file (dotfiles-managed) loads through the link.
 #[cfg(unix)]
 #[test]
 fn symlinked_config_and_state_files_load() {
@@ -608,7 +596,6 @@ fn symlinked_config_and_state_files_load() {
     fs::create_dir_all(&real).unwrap();
     fs::create_dir_all(&config_dir).unwrap();
     fs::create_dir_all(&state_dir).unwrap();
-    // An empty but present store keeps the exit code at 0 (exit 2 means no stores found).
     fs::create_dir_all(temp.path().join(".claude/projects")).unwrap();
     fs::write(real.join("config.toml"), "roots = ['/from-link']\n").unwrap();
     fs::write(real.join("state.toml"), "pins = ['/from-link']\n").unwrap();
