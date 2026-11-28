@@ -16,8 +16,14 @@ impl Source for Claude {
         Agent::ClaudeCode
     }
     fn scan(&self, config: &Config) -> SourceScan {
+        self.scan_files(config, &|_| true)
+    }
+    fn scan_files(&self, config: &Config, include: &dyn Fn(&Path) -> bool) -> SourceScan {
         let mut result = SourceScan::default();
-        for path in read::files(&self.root, true, true, &mut result) {
+        for path in read::files(&self.root, true, true, &mut result)
+            .into_iter()
+            .filter(|path| include(path))
+        {
             match session(&path, self.now, &mut result) {
                 Some(s)
                     if self.now - s.last_activity_at <= i64::from(config.window_days) * 86400 =>
