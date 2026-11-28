@@ -433,6 +433,7 @@ fn empty_overrides_count_as_unset() {
         .env("CODEX_HOME", "")
         .env("SBOARD_STATE_DIR", "")
         .env("SBOARD_CONFIG_DIR", "")
+        .env_remove("XDG_DATA_HOME")
         .current_dir(&cwd)
         .args(["list", "--json"])
         .output()

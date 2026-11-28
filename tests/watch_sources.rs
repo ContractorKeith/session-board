@@ -9,6 +9,12 @@ use std::{fs, path::Path, process::Command, time::Duration};
 
 fn probe(mode: &str) {
     let temp = tempfile::tempdir().unwrap();
+    fs::create_dir_all(temp.path().join("config")).unwrap();
+    fs::write(
+        temp.path().join("config/config.toml"),
+        format!("window_days = {}\n", u32::MAX),
+    )
+    .unwrap();
     let mut command = Command::new(std::env::current_exe().unwrap());
     common::no_tmux(&mut command, temp.path());
     let output = command

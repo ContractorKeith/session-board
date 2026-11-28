@@ -205,6 +205,12 @@ fn issue75_cli_defaults_are_project_activity_despite_saved_preferences() {
         ..Default::default()
     };
     state.save(&temp.path().join("state/state.toml")).unwrap();
+    fs::create_dir_all(temp.path().join("config")).unwrap();
+    fs::write(
+        temp.path().join("config/config.toml"),
+        format!("window_days = {}\n", u32::MAX),
+    )
+    .unwrap();
     let run = |args: &[&str]| {
         let output = Command::new(env!("CARGO_BIN_EXE_sboard"))
             .args(args)
